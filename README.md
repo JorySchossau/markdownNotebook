@@ -17,7 +17,7 @@ Jupyter Notebooks are great, but the software is gigantic, and the notebook file
 
 ## How does it work?
 
-Markdown Notebook is not complicated. It works by running on the command line, and you telling it what markdown files you want it to watch for changes. When it detects a change, then it parses the file looking for runnable code chunks (mardown code fenced sections), runs the code, and shows the output if you've requested that, then refreshes your file with the modified content including code output.
+Markdown Notebook is not complicated. It works by running on the command line, and you telling it what markdown files you want it to watch for changes. When it detects a change, then it parses the file looking for runnable code chunks (markdown code fenced sections), runs the code, and shows the output if you've requested that, then refreshes your file with the modified content including code output.
 
 Here are the steps:
 * Wait for change before proceeding
@@ -33,7 +33,7 @@ Here are the steps:
 ## How to use it?
 
 ~~~
-./mdnb myMarkdownFile.md (...more mardown files)
+./mdnb myMarkdownFile.md (...more markdown files)
 ~~~
 
 Then, let's say you want to run bash and python code. You can make mdnb aware of such code blocks, and customize how that code is run through the YAML header. The full example is below, and the resulting transformed version is shown below that.
