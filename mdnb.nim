@@ -174,7 +174,7 @@ proc writeIntoCell(md:var MarkdownFile, cell:var Cell, value:string) =
   var txt {.byAddr.} = cell.privContent[][]
   txt = txt[0..cell.rng.a-1] & value & '\n' & txt[cell.rng.b+1..^1]
   let deltaOffset = value.len + 1 - (cell.rng.b-cell.rng.a+1)
-  cell.rng.b = cell.rng.a + value.len # FIXME - 1
+  cell.rng.b = cell.rng.a + value.len 
   md.updatePositionsByOffset(cellposition=cell.id, fileoffset=deltaOffset)
 
 proc collateSources(md:var MarkdownFile) =

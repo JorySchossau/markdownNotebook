@@ -4,7 +4,7 @@ Markdown Notebook is an editor-agnostic Jupyter Notebook-like experience for you
 
 Markdown Notebook (mdnb) is a literate programming tool, inspired by the nifty [Emacs Babel Org Mode](https://orgmode.org/worg/org-contrib/babel/intro.html#org71e2aea). That is, instead of putting prose as comments into your source code, you can put source code into your prose, promoting better explanations, documentation, and readability. The use of markdown here allows for Emacs-like flexibility in handling various kinds of prose-level description formats like LaTeX, UML diagrams, and images (depending how you render or preview your markdown). I tried maybe 20 markdown editors, and while many work with basic editing, previewing, and reloading when changed, the [Zettlr](https://www.zettlr.com) Markdown Editor is the one I recommend for the best Jupyter Notebook-like experience. But a basic text editor like Vim also works well if you set it up to listen for file changes.
 
-Other similar tools include:
+Related tools include:
 * [Jupyter Notebooks](https://jupyter.org/)
 * [VSCode Markdown Preview Enhanced Plugin Code Chunks](https://shd101wyy.github.io/markdown-preview-enhanced/#/code-chunk)
 * [RStudio R-Markdown](https://rmarkdown.rstudio.com/lesson-3.html)
@@ -179,6 +179,7 @@ Special Supported Language
 
 Non-Code Fence Commands
 * `show:filename` - replace this text with a markdown hyperlink to `filename`
+* `:clean` - on a line of its own, this will be removed and a all cells rerun
 ```
 
 ### To-Do
