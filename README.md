@@ -21,6 +21,8 @@ Markdown Notebook is not complicated. It works by running on the command line, a
 
 Here are the steps:
 * Wait for change before proceeding
+* Parse markdown for code chunks
+* Replace special keywords that expand to new code chunks or expand to a uri link
 * Parse YAML header for supported languages in this file and how to run them
 * Parse markdown for code chunks
 * Only run code chunks if the resulting source files will change since last run
@@ -28,7 +30,6 @@ Here are the steps:
 * Show "(please wait") for output code chunks
 * Run code chunks according to languages and commands described in YAML header
 * Replace all output code chunks with the actual command output
-* Replace all non-code chunk output shortcuts with a link to the actual file
 
 ## How to use it?
 
