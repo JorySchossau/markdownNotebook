@@ -36,7 +36,7 @@ Here are the steps:
 ./mdnb myMarkdownFile.md (...more markdown files)
 ~~~
 
-Then, let's say you want to run bash and python code. You can make mdnb aware of such code blocks, and customize how that code is run through the YAML header. The full example is below, and the resulting transformed version is shown below that.
+Then, open your markdown files in your favorite editor and `save` the file to update the code interpretation. Let's say you want to run bash and python code. You can make mdnb aware of such code blocks, and customize how that code is run through the YAML header. The full example is below, and the resulting transformed version is shown below that.
 
 ~~~
 ---
