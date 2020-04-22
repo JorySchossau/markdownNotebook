@@ -1,4 +1,4 @@
-Markdown Notebook is an editor-agnostic Jupyter Notebook-like experience for your markdown files. Code chunks are run and their output shown in your markdown file -- which is ready to be rendered to any format at publication time using any markdown renderer. It works best if your text editor supports smoothly reloading the file when a change is detected.
+Markdown Notebook is an editor-agnostic Jupyter Notebook-like experience for your markdown files. Code chunks are run and their output shown in your markdown file -- CommonMark specification is followed, so there is no special syntax that should break any markdown editor, renderer, or converter you want to use. It works best if your text editor supports smoothly reloading the file when a change is detected.
 
 ## What is it?
 
