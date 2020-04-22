@@ -13,7 +13,7 @@ Other similar tools include:
 
 ## Why?
 
-Jupyter Notebooks are great, but the software is gigantic, and the notebook files are not meant to be viewed directly as text files, making working with code versioning tools an annoying process. Also, you're beholden to whatever kernels exist to let your notebook know how to run your code. Why not let use whatever you want for an editor and runnable languages?
+Jupyter Notebooks are great, but the software is gigantic, and the notebook files are not meant to be viewed directly as text files, making working with code versioning tools an annoying process. Also, you're beholden to whatever kernels exist to let your notebook know how to run your code. Why not let use whatever you want for an editor and runnable languages? Also, it was a quick hobby project.
 
 ## How does it work?
 
@@ -171,7 +171,7 @@ Non-Code Fence Commands
 ```
 
 ### To-Do
-- [ ] Reimplement / Cleanup
-- [ ] Make md filename part of temp filenames
+- [x] Reimplement / Cleanup
+- [x] Make md filename part of temp filenames
 - [ ] CI releases when stable
-- [ ] Make non-code fence show command extension-aware and do the right thing
+- [ ] Make non-code fence `show` command extension-aware and do the right thing
