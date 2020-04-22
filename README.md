@@ -186,6 +186,6 @@ Non-Code Fence Commands
 
 ### To-Do
 - [x] Reimplement / Cleanup
+- [x] Make non-code fence `show` command extension-aware and do the right thing
 - [x] Make md filename part of temp filenames
 - [ ] CI releases when stable
-- [ ] Make non-code fence `show` command extension-aware and do the right thing
