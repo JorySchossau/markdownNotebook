@@ -1,7 +1,7 @@
 import strutils, sequtils, options, pegs, tables, os, strformat, std/decls, osproc, times
 
 ## ==============
-
+const imageExt = "png jpg jpeg gif pdf".split().mapIt("."&it)
 let
   yamlEndPattern =
     peg"""\n'---' '-'*\n"""
@@ -229,54 +229,30 @@ proc replaceShortcuts(md:var MarkdownFile) =
   var endPrevChunk, startNextChunk:int
   endPrevChunk = 0
   var matches = newSeq[string](1)
-  for cell in md.cells.mitems:
-    pos = (-1,0)
-    startNextChunk = cell.rng.a
-    while true:
-      matches[0] = ""
-      pos = md.privContent[][][endPrevChunk..startNextChunk].findBounds(bareShowPattern, matches, start=pos.last)
-      if pos.first == -1: break
-      let fragpos = (endPrevChunk+pos.first + 1, endPrevChunk+pos.last)
-      let newvalue = &"![{matches[0]}]({matches[0]})\n"
-      let deltaOffset = newvalue.len - (fragpos[1]-fragpos[0]) - 1
-      txt = txt[0..fragpos[0]-1] & newvalue & txt[fragpos[1]+1..^1]
-      pos = (pos.first, pos.first+newvalue.len)
-      md.updatePositionsByOffset(cellposition=cell.id-1, fileoffset=deltaOffset)
-      startNextChunk += deltaOffset
-    pos = (-1,0)
-    while true:
-      matches[0] = ""
-      pos = md.privContent[][][endPrevChunk..startNextChunk].findBounds(cleanPattern, matches, start=pos.last)
-      if pos.first == -1: break
-      let fragpos = (endPrevChunk+pos.first + 1, endPrevChunk+pos.last)
-      txt = txt[0..fragpos[0]-1] & txt[fragpos[1]+1..^1] # completely remove fragment
-      pos = (pos.first, pos.last-7)
-      md.updatePositionsByOffset(cellposition=cell.id-1, fileoffset= -7)
-      startNextChunk += -7
-      md.cleanBuild = true
-    endPrevChunk = cell.rng.b
-  pos = (-1,0)
-  startNextChunk = md.privContent[][].len-1
-  while true:
-    matches[0] = ""
-    pos = md.privContent[][][endPrevChunk..startNextChunk].findBounds(bareShowPattern, matches, start=pos.last)
-    if pos.first == -1: break
-    let fragpos = (endPrevChunk+pos.first + 1, endPrevChunk+pos.last)
-    let newvalue = &"![{matches[0]}]({matches[0]})\n"
-    let deltaOffset = newvalue.len - (fragpos[1]-fragpos[0]) - 1
-    txt = txt[0..fragpos[0]-1] & newvalue & txt[fragpos[1]+1..^1]
-    pos = (pos.first, pos.first+newvalue.len)
-    startNextChunk += deltaOffset
-  pos = (-1,0)
-  while true:
-    matches[0] = ""
-    pos = md.privContent[][][endPrevChunk..startNextChunk].findBounds(cleanPattern, matches, start=pos.last)
-    if pos.first == -1: break
-    let fragpos = (endPrevChunk+pos.first + 1, endPrevChunk+pos.last)
-    txt = txt[0..fragpos[0]-1] & txt[fragpos[1]+1..^1] # completely remove fragment
-    pos = (pos.first, pos.last-7)
-    startNextChunk += -7
-    md.cleanBuild = true
+  for cell_i in 0..md.cells.len: #note, 3 cells, loops [0,1,2,3] for non-cell segments
+    if unlikely(cell_i == md.cells.len): startNextChunk = md.privContent[][].len-1
+    else:                                startNextChunk = md.cells[cell_i].rng.a
+    let (showimg,clean,showtxt) = ("![$1]($1)\n","","```show:$1\n$2\n```\n")
+    for (pattern,replacement) in zip([bareShowPattern,cleanPattern],[showimg,clean]):
+      pos = (-1,0)
+      while true:
+        matches[0] = ""
+        pos = md.privContent[][][endPrevChunk..startNextChunk].findBounds(pattern, matches, start=pos.last)
+        if pos.first == -1: break
+        let fragpos = (endPrevChunk+pos.first + 1, endPrevChunk+pos.last)
+        var newvalue:string
+        if replacement == showimg and matches[0].split_file.ext in imageExt:
+          newvalue = showimg % matches # dynamic string formatting
+        else:
+          let contents = if fileExists matches[0]: readFile matches[0] else: "```show:$1\n```\n"
+          newvalue = showtxt % [matches[0], contents]
+        let deltaOffset = newvalue.len - (fragpos[1]-fragpos[0]) - 1
+        txt = txt[0..fragpos[0]-1] & newvalue & txt[fragpos[1]+1..^1]
+        pos = (pos.first, pos.first+newvalue.len)
+        if likely(cell_i < md.cells.len):
+          md.updatePositionsByOffset(cellposition=md.cells[cell_i].id, fileoffset=deltaOffset)
+        startNextChunk += deltaOffset
+        if replacement == clean: md.cleanBuild = true
 
 proc clearAllFiles(md:var MarkdownFile) =
   for codeCell in md.cells.filterIt(it.properties.code):
