@@ -145,6 +145,17 @@ image.save("cow.png")
 ![cow.png](cow.png)
 ~~~
 
+## Compiling
+
+I'll add precompmiled binaries soon, but for now you can compile it yourself. Seriously, it's easy with Nim.
+
+```sh
+git clone https://github.com/JorySchossau/markdownNotebook
+cd markdownNotebook
+nim c mdnb
+```
+Done!
+
 ## Supported Commands
 
 ```
