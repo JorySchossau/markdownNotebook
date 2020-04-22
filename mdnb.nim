@@ -21,7 +21,7 @@ let
     peg"""
     r <- (\n / ^) upTo3WS {codefence} (!\n \s* {command})+ (!codefenceend .)* codefenceend
     codefence <- "```" '`'* / "~~~" '~'*
-    upTo3WS <- \s? \s? \s?
+    upTo3WS <- !\n \s? !\n \s? !\n \s?
     command <- word ':' quoted_string   /   word ':' word   /   word
     quoted_string <- \" ( !\" .)+ \"
     word <- (\w / \/ / \\ / \. / \-)+
@@ -107,6 +107,7 @@ proc addCell(md:var MarkdownFile, rng:HSlice[int,int], properties:CellProperties
   md.cells.add result
 
 proc processBodyForCells(md:var MarkdownFile) =
+  md.cells.setLen 0
   var matches = newSeq[string](16)
   var pos:tuple[first,last:int] = (-1, -1)
   let content {.byAddr.} = md.privContent[][]
@@ -160,8 +161,6 @@ proc newMarkdownFile(filename:string):MarkdownFile =
   result.privContent = createU(ptr string, 1)
   result.privContent[] = string.createU(contents.len)
   result.privContent[][] = contents
-  result.processYamlHeader
-  result.processBodyForCells
 
 proc content(md:MarkdownFile):string = md.privContent[][]
 
@@ -209,6 +208,7 @@ proc runCells(md:var MarkdownFile) =
   createDir "temp"
   for cell in md.cells.mitems:
     if cell.properties.dirty:
+      cell.properties.dirty = false
       let sourceFilename = cell.properties.source.get
       let outFilename = cell.properties.output.get
       sourceFilename.safeWriteFile(md.sources[sourceFilename])
@@ -241,8 +241,8 @@ proc replaceShortcuts(md:var MarkdownFile) =
         if pos.first == -1: break
         let fragpos = (endPrevChunk+pos.first + 1, endPrevChunk+pos.last)
         var newvalue:string
-        if replacement == showimg and matches[0].split_file.ext in imageExt:
-          newvalue = showimg % matches # dynamic string formatting
+        if replacement == clean or (replacement == showimg and matches[0].split_file.ext in imageExt):
+          newvalue = replacement % matches # dynamic string formatting
         else:
           let contents = if fileExists matches[0]: readFile matches[0] else: "```show:$1\n```\n"
           newvalue = showtxt % [matches[0], contents]
@@ -260,7 +260,10 @@ proc clearAllFiles(md:var MarkdownFile) =
     removeFile codeCell.properties.output.get
 
 proc process(md:var MarkdownFile) =
-  md.replaceShortcuts
+  md.processYamlHeader
+  md.processBodyForCells
+  md.replaceShortcuts # this possibly creates new cells
+  md.processBodyForCells
   if md.cleanBuild:
     md.clearAllFiles
     md.cleanBuild = false
