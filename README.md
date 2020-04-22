@@ -40,11 +40,6 @@ Then, let's say you want to run bash and python code. You can make mdnb aware of
 
 ~~~
 ---
-code: sh .sh bash
-code: python .py "python -OO"
----
-
----
 code: sh .sh sh
 code: python .py "python -OO"
 ---
@@ -95,11 +90,6 @@ show:cow.png
 When you save the the file, mdnb converts that to
 
 ~~~
----
-code: sh .sh bash
-code: python .py "python -OO"
----
-
 ---
 code: sh .sh sh
 code: python .py "python -OO"
