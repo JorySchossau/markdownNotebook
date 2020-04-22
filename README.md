@@ -53,7 +53,6 @@ echo "from the bash demo"
 ```
 
 ```show:bashdemo
-from the bash demo
 ```
 
 ``` python source:pydemo.py
@@ -72,8 +71,9 @@ msg = cow.Small().milk("mdnb!")
 print(msg)
 ```
 
-```show:pydemo.txt
-```
+We can use the `show:file` shortcut directly; it will be replaced for us.
+
+show:pydemo.txt
 
 Let's save that out to an image too, and show it below
 
@@ -122,6 +122,8 @@ We can continue an explanation, and then add more code to a source file as we bu
 msg = cow.Small().milk("mdnb!")
 print(msg)
 ```
+
+We can use the `show:file` shortcut directly; it will be replaced for us.
 
 ```show:pydemo.txt
  _______
