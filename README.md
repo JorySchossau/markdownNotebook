@@ -173,15 +173,15 @@ YAML Header Commands
 
 Code Fence Commands
 * `source` - Run this block, autogenerate source filename, ignore output
-* `source:filename` - Run this block, use `filename` as source file
-* `output:filename` - Run this block, saving output to `filename`, autogenerate source filename if unspecified
+* `source:filename` - Run this block, use `filename` as source filename
+* `output:filename` - Run this block, saving output to `filename`, autogenerate source filename if `source` unspecified
 * `show:filename` - display contents of file in block
 
 Special Supported Language
 * `raw` - may be used as the language of a code block, indicating no command to run, save to output if specified
 
 Non-Code Fence Commands
-* `show:filename` - replace this text with a markdown hyperlink to `filename`
+* `show:filename` - replace this text with a markdown hyperlink to `filename` if image, or a codeblock if not an image
 * `:clean` - on a line of its own, this will be removed and a all cells rerun
 ```
 
