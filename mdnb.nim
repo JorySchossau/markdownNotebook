@@ -285,13 +285,13 @@ proc clearAllFiles(md:var MarkdownFile) =
 
 proc process(md:var MarkdownFile) =
   md.replaceShortcuts
-  #if md.cleanBuild:
-  #  md.clearAllFiles
-  #  md.cleanBuild = false
+  if md.cleanBuild:
+    md.clearAllFiles
+    md.cleanBuild = false
   md.collateSources
   md.markDirtyCells
   md.showWaitMessages
-  #md.runCells
+  md.runCells
   md.write
 
 ## ==============
@@ -335,6 +335,7 @@ proc main =
     for idx,filename in filenames:
       if modTimes[idx] < getLastModTime(filename):
         var md = newMarkdownFile filename
+        if not looping: md.cleanBuild = true
         md.process
         modTimes[idx] = getLastModTime(filename)
     if looping: sleep 500
