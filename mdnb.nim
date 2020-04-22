@@ -162,6 +162,10 @@ proc newMarkdownFile(filename:string):MarkdownFile =
   result.privContent[] = string.createU(contents.len)
   result.privContent[][] = contents
 
+proc delete(md:var MarkdownFile) =
+  dealloc md.privContent[]
+  dealloc md.privContent
+
 proc content(md:MarkdownFile):string = md.privContent[][]
 
 proc updatePositionsByOffset(md:var MarkdownFile, cellposition:int, fileoffset:int) =
@@ -316,6 +320,7 @@ proc main =
         var md = newMarkdownFile filename
         if not looping: md.cleanBuild = true
         md.process
+        delete md
         modTimes[idx] = getLastModTime(filename)
     if looping: sleep 500
     else: break
