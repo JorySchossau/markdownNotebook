@@ -13,7 +13,7 @@ Other similar tools include:
 
 ## Why?
 
-Jupyter Notebooks are great, but the software is gigantic, and the notebook files are not meant to be viewed directly as text files, making working with code versioning tools an annoying process. Also, you're beholden to whatever kernels exist to let your notebook know how to run your code. Why not let use whatever you want for an editor and runnable languages? Also, it was a quick hobby project.
+Jupyter Notebooks are great, but the software is gigantic, and the notebook files are not meant to be viewed directly as text files, making working with code versioning tools an annoying process. Also, you're beholden to whatever kernels exist to let your notebook know how to run your code. Why not use whatever you want for an editor and runnable languages? Also, it was just a quick 1-day hobby project because I wanted it to exist.
 
 ## How does it work?
 
