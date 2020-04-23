@@ -185,8 +185,12 @@ Non-Code Fence Commands
 * `:clean` - on a line of its own, this will be removed and a all cells rerun
 ```
 
-### To-Do
+## To-Do
 - [x] Reimplement / Cleanup
 - [x] Make non-code fence `show` command extension-aware and do the right thing
 - [x] Make md filename part of temp filenames
 - [ ] CI releases when stable
+
+## Bugs
+
+Thar be bugs! Probably. Please file an issue if you find any.
