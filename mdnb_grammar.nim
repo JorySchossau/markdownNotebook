@@ -19,7 +19,9 @@ let
     r <- (\n / ^) upTo3WS {codefence} (!\n \s* {command})+ (!codefenceend .)* codefenceend
     codefence <- "```" '`'* / "~~~" '~'*
     upTo3WS <- !\n \s? !\n \s? !\n \s?
-    command <- word ':' quoted_string   /   word ':' word   /   word
+    command <- stateField   /   word ':' quoted_string   /   word ':' word   /   word
+    stateField <- '[' statchar ']'
+    statchar <- [srxk]
     quoted_string <- \" ( !\" .)+ \"
     word <- (\w / \/ / \\ / \. / \- / \,)+
     codefenceend <- \n upTo3WS $1 (!\n \s)* \n

@@ -7,6 +7,10 @@ type CellProperties = object
   isAppend: bool
   inputs: seq[string]
   language, output, source, show: Option[string]
+  state: char   ## `[ ]` field after the lang/id in the info string (see §7/§12).
+               ## '\0' = absent: dirty-driven auto-run (today's behavior).
+               ## 's' = stopped (won't auto-run), 'r' = running (mdnb-set),
+               ## 'x' = execute (force run), 'k' = kill the running process.
 
 type Cell = object
   id: int

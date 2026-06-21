@@ -50,6 +50,17 @@ proc processBodyForCells(md: var MarkdownFile) =
       if match.len == 0: break
       if i == 1 and (match in md.runtimes or match == "raw"):
         props.language = some(match)
+      # `[ ]` state field: a single-char token wrapped in brackets (states
+      # s/r/x/k). The grammar only emits valid states (see stateField), so an
+      # unrecognized bracketed token means the user mistyped and the cell is
+      # skipped, matching how other malformed commands are handled.
+      if match.len == 3 and match[0] == '[' and match[2] == ']':
+        let st = match[1]
+        if st in "srxk": props.state = st
+        else:
+          echo &"Skipping cell: invalid state '{st}' (expected s/r/x/k)"
+          invalid = true
+        continue
       let command = match.split(':')
       case command[0]
       of "source":

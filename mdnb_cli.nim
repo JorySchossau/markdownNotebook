@@ -2,6 +2,12 @@
 ## 500ms, debounces saves closer together than `debounceInterval`, and runs the
 ## pipeline on change. Native watchers (inotify/FSEvents) are deliberately not
 ## used — mdnb stays cross-platform. See agents.md §6 (`main`).
+##
+## Asynchronous execution (Tier 2): each `md` is kept alive across cycles so a
+## long-running cell can be **reaped** on a later cycle without blocking. Every
+## cycle reaps finished subprocesses for every watched file (not only the one
+## that just changed), so cell A's slow run never blocks cell B's output from
+## landing in another file. See `mdnb_run.nim` for the run/reap layer.
 ## Two saves closer together than this (measured by their mtimes) are treated as
 ## one: the later one is ignored. Keeps a burst of mid-edit saves from each
 ## triggering a full cell run. Polling stays at 500ms; this is a save spacing
@@ -30,10 +36,12 @@ proc main =
 
   var modTimes = newSeq[Time](params.len)
   var processedTimes = newSeq[Time](params.len)
+  var selfWriteTimes = newSeq[Time](params.len)   # mtimes of mdnb's own writes, to ignore
   for idx, filename in params:
     modTimes[idx] = if looping: getLastModTime(filename)
                     else: getLastModTime(filename) - 1.minutes
     processedTimes[idx] = modTimes[idx]
+    selfWriteTimes[idx] = Time()
 
   echo "started"
   while true:
@@ -41,6 +49,12 @@ proc main =
       let curTime = getLastModTime(filename)
       if modTimes[idx] < curTime:
         modTimes[idx] = curTime
+        # Ignore mdnb's own writes: a change whose mtime matches one we just
+        # wrote is our feedback, not a user save, so don't reprocess (otherwise
+        # a write-then-detect loop forms, especially now that async cells leave
+        # `(please wait)` on disk while still running).
+        if curTime == selfWriteTimes[idx]:
+          continue
         # Debounce: a save closer than `debounceInterval` to the last one we
         # actually processed for this file is ignored (the run-once `-o` path is
         # exempt). The gap is measured by mtime, matching the "at least 1 second
@@ -51,5 +65,35 @@ proc main =
         if not looping: md.cleanBuild = true
         md.process
         processedTimes[idx] = curTime
-    if looping: sleep(500)
-    else: break
+        # Record the mtime of the file as mdnb left it, so the change mdnb just
+        # caused (writing output/state back) is recognized as self-feedback and
+        # skipped on the next poll rather than treated as a new user save.
+        selfWriteTimes[idx] = getLastModTime(filename)
+      elif anyRunning(filename):
+        # Async reaping (Tier 2): a cell launched on an earlier save may have
+        # finished since. Re-read the file, parse it, and reap so a long-running
+        # cell's output lands even when no new save arrives — and a slow cell in
+        # this file never blocks another watched file's saves from being
+        # processed. Parsing is required so `reapFinished` can locate the show
+        # cell to write the output into.
+        var md = newMarkdownFile(filename)
+        md.processYamlHeader
+        md.processBodyForCells
+        md.pollRuns
+        # A reap may have written output/state back; record that mtime as our own
+        # so the next poll skips it instead of treating mdnb's write as a save.
+        selfWriteTimes[idx] = getLastModTime(filename)
+        modTimes[idx] = selfWriteTimes[idx]
+    if looping:
+      sleep(500)
+    else:
+      # Run-once (`-o`): one-shot mode expects full output before exit, so block
+      # here until every launched cell has been reaped, then finish.
+      while running.len > 0:
+        for filename in params:
+          var md = newMarkdownFile(filename)
+          md.processYamlHeader
+          md.processBodyForCells
+          md.pollRuns
+        if running.len > 0: sleep(100)
+      break

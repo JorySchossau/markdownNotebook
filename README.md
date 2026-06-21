@@ -183,6 +183,14 @@ Code Fence Commands
 * `inputs:filename` or `inputs:f1,f2,f3` - declare one or more (comma-separated, no spaces) files this cell consumes as inputs. The cell becomes a *dependency* of any cell that `output:`s one of those files: when such a producing cell changes, this cell is rerun too, even if its own source is unchanged. Dirtiness propagates transitively, so chains of `inputs:`→`output:` relationships all rebuild. (`inputs:` files are never written by mdnb — they are pure inputs.)
 * `show:filename` - display contents of file in block
 
+Asynchronous execution state field
+* `[s]` / `[r]` / `[x]` / `[k]` - an optional single-char field in `[ ]` placed right after the language id in the info string, e.g. `` ```python [x] source:foo.py ``. It controls manual execution and reports run state. With no field, a code cell auto-runs when it is dirty (its source/output file is missing/changed, or a cell whose output it consumes changed) — the default, unchanged behavior. The states:
+  - `s` = stopped — the cell will not auto-run even if dirty; set `x` to run it.
+  - `r` = running — set by mdnb while the cell's process is in flight (don't type this yourself).
+  - `x` = execute — force the cell to run now, even if it isn't dirty; mdnb flips it to `r` while running, then `s` when done.
+  - `k` = kill — terminate a currently-running cell; mdnb kills it and flips the state to `s`.
+  Cells run as non-blocking subprocesses, so a long-running cell does not block the watcher from parsing further saves (or other files' saves). Because mdnb runs each cell through the shell, killing a cell terminates mdnb's shell wrapper; grandchildren the cell spawned may linger until they exit on their own.
+
 Special Supported Language
 * `raw` - may be used as the language of a code block, indicating no command to run, save to output if specified
 
@@ -214,7 +222,7 @@ These features have been agreed as the next work. They are grouped by priority.
 **Tier 2 — reliability**
 - [x] Only act on saves that are at least 1 second apart. If a save arrives less than 1s after the last processed save for that file, ignore it (debounce). Polling every 500ms stays; we will keep using mtime polling rather than native inotify/FSEvents watchers because they are system-limited and mdnb is cross-platform.
 - [x] Build a cell call-dependency graph. A cell is considered dirty (and rerun) when a cell whose output it consumes changes, not only when its own source or output file is missing. A cell declares what it consumes via `inputs:<files>` (a comma-separated list, no spaces); it depends on any cell that `output:`s one of those files, and dirtiness propagates transitively through such chains. (`inputs:` is the dependency-input signal because mdnb never writes a cell's input files — they're pure inputs — whereas a cell's own `source:`/`output:` are files it *writes*.) Changing cell A invalidates cells that depend on A's output.
-- [ ] Implement asynchronous multithreaded execution so that a long-running cell does not block the watcher from parsing further saves. Introduce a new `[ ]` state field after the lang_name/id in the info string: states are `s`=stopped / `r`=running, and user can set `x`=execute / `k`=kill to control state.
+- [x] Implement asynchronous multithreaded execution so that a long-running cell does not block the watcher from parsing further saves. Introduce a new `[ ]` state field after the lang_name/id in the info string: states are `s`=stopped / `r`=running, and user can set `x`=execute / `k`=kill to control state. Cells run as non-blocking subprocesses (reaped on later watch cycles), so a long-running cell no longer holds up the watcher. Dirty-driven auto-run stays the default for cells with no `[ ]` field, so existing notebooks keep working unchanged.
 - [ ] Add a `timeout:N` codeblock command to set a per-cell timeout in N seconds. If a cell exceeds its timeout it should be killed. If `timeout:` is unspecified, default to 5 seconds.
 
 **Tier 3 — usability**
