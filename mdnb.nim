@@ -1,4 +1,4 @@
-import std/[strutils, sequtils, options, pegs, tables, os, strformat, osproc, times]
+import std/[strutils, sequtils, options, pegs, tables, sets, os, strformat, osproc, times]
 
 ## ==============
 const imageExt = "png jpg jpeg gif pdf".split().mapIt("." & it)
@@ -42,6 +42,7 @@ proc safeWriteFile(filename, contents: string) =
 type CellProperties = object
   dirty: bool
   code: bool
+  isAppend: bool
   language, header, output, source, show: Option[string]
 
 type Cell = object
@@ -80,10 +81,26 @@ proc processYamlHeader(md: var MarkdownFile) =
       if pos.first == -1: break
       md.runtimes[matches[0]] = Runtime(extension: matches[1], command: matches[2])
 
+## ==============
+## Position cache: maps file content -> parsed cells. The content itself is the
+## cache key, so a byte-identical buffer (e.g. an editor auto-save of mdnb's own
+## output, or a no-op re-save) hits the cache and skips the PEG scan entirely;
+## any real edit changes the key and falls back to a full re-parse. Entries hold
+## onto a copy of their key, so cap the size to keep memory bounded.
+const cellCacheMax = 32
+var cellCache: OrderedTable[string, seq[Cell]]
+
 proc addCell(md: var MarkdownFile; rng: HSlice[int, int]; properties = CellProperties()) =
   md.cells.add Cell(id: md.cells.len + 1, rng: rng, properties: properties)
 
 proc processBodyForCells(md: var MarkdownFile) =
+  ## Populate `md.cells` from the fenced code blocks in `md.buf`. Reuses cached
+  ## cell positions when the buffer is byte-identical to a previous parse (the
+  ## content itself is the cache key, so any edit invalidates automatically);
+  ## otherwise runs the full PEG scan and stores the result for next time.
+  if md.buf[] in cellCache:
+    md.cells = cellCache[md.buf[]]
+    return
   md.cells.setLen 0
   var matches = newSeq[string](16)
   var pos: tuple[first, last: int] = (-1, -1)
@@ -103,8 +120,23 @@ proc processBodyForCells(md: var MarkdownFile) =
       let command = match.split(':')
       case command[0]
       of "source":
-        props.code = true
-        if command.len == 2: props.source = some(command[1])
+        if props.isAppend:
+          echo "Skipping cell: 'source:' and 'append:' are mutually exclusive"
+          invalid = true
+        else:
+          props.code = true
+          if command.len == 2: props.source = some(command[1])
+      of "append":
+        if props.source.isSome:
+          echo "Skipping cell: 'source:' and 'append:' are mutually exclusive"
+          invalid = true
+        elif command.len != 2:
+          echo "Skipping cell: argument required: 'append:filename'"
+          invalid = true
+        else:
+          props.code = true
+          props.isAppend = true
+          props.source = some(command[1])
       of "output", "show", "header":
         if command.len != 2:
           echo "Skipping cell: argument required: 'command:argument'"
@@ -127,6 +159,10 @@ proc processBodyForCells(md: var MarkdownFile) =
     var contentEnd = buf[].rfind(chars = {'\n'}, last = pos.last - 1)
     if contentEnd <= contentStart: contentEnd = contentStart
     md.addCell(contentStart + 1 .. contentEnd, props)
+  if cellCache.len >= cellCacheMax:
+    var stale: seq[Cell]
+    discard cellCache.pop(toSeq(cellCache.keys)[0], stale)
+  cellCache[md.buf[]] = md.cells
 
 proc newMarkdownFile(filename: string): MarkdownFile =
   result.filename = filename
@@ -146,11 +182,18 @@ proc writeIntoCell(md: var MarkdownFile; idx: int; value: string) =
   md.updatePositionsByOffset(cell.id, deltaOffset)
 
 proc collateSources(md: var MarkdownFile) =
+  ## Glue cells into per-target source strings. A `source:` cell fully defines
+  ## its file (last one in document order wins); an `append:` cell adds its
+  ## content onto whatever `source:`/`append:` already established for that
+  ## target. Auto-generated sources (no explicit `source:`/`append:`) are unique
+  ## per cell, so they can't collide.
   for cell in md.cells:
     if not cell.properties.code: continue
     let source = cell.properties.source.get
-    if source notin md.sources: md.sources[source] = ""
-    md.sources[source] &= md.content(cell) & '\n'
+    if cell.properties.isAppend:
+      md.sources[source] = md.sources.getOrDefault(source) & md.content(cell) & '\n'
+    else:
+      md.sources[source] = md.content(cell) & '\n'
     md.cellsWritingToSource[source] = md.cellsWritingToSource.getOrDefault(source) + 1
 
 proc markDirtyCells(md: var MarkdownFile) =
@@ -234,9 +277,13 @@ proc replaceShortcuts(md: var MarkdownFile) =
     endPrevChunk = startNextChunk
 
 proc clearAllFiles(md: MarkdownFile) =
+  var seen: HashSet[string]
   for cell in md.cells:
     if cell.properties.code:
-      removeFile(cell.properties.source.get)
+      let source = cell.properties.source.get
+      if source notin seen:
+        seen.incl source
+        removeFile(source)
       removeFile(cell.properties.output.get)
 
 proc process(md: var MarkdownFile) =

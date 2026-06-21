@@ -70,7 +70,7 @@ import os
 
 We can continue an explanation, and then add more code to a source file as we build our explanation.
 
-```python source:pydemo.py output:pydemo.txt
+```python append:pydemo.py output:pydemo.txt
 msg = cow.Small().milk("mdnb!")
 print(msg)
 ```
@@ -81,7 +81,7 @@ show:pydemo.txt
 
 Let's save that out to an image too, and show it below
 
-```python source:pydemo.py
+```python append:pydemo.py
 image = Image.new(mode = "RGB", size = (200,200), color = "black")
 draw = ImageDraw.Draw(image)
 draw.text((10,10), msg, font=ImageFont.truetype('arial.ttf', 22), fill=(255,255,255))
@@ -122,7 +122,7 @@ import os
 
 We can continue an explanation, and then add more code to a source file as we build our explanation.
 
-```python source:pydemo.py output:pydemo.txt
+```python append:pydemo.py output:pydemo.txt
 msg = cow.Small().milk("mdnb!")
 print(msg)
 ```
@@ -133,15 +133,15 @@ We can use the `show:file` shortcut directly; it will be replaced for us.
  _______
 < mdnb! >
  -------
-       \   ,__,
-        \  (oo)____
-           (__)    )\
-            ||--|| *
+      \   ,__,
+       \  (oo)____
+          (__)    )\
+           ||--|| *
 ```
 
 Let's save that out to an image too, and show it below
 
-```python source:pydemo.py
+```python append:pydemo.py
 image = Image.new(mode = "RGB", size = (200,200), color = "black")
 draw = ImageDraw.Draw(image)
 draw.text((10,10), msg, font=ImageFont.truetype('arial.ttf', 22), fill=(255,255,255))
@@ -177,8 +177,9 @@ YAML Header Commands
 
 Code Fence Commands
 * `source` - Run this block, autogenerate source filename, ignore output
-* `source:filename` - Run this block, use `filename` as source filename
-* `output:filename` - Run this block, saving output to `filename`, autogenerate source filename if `source` unspecified
+* `source:filename` - Run this block, defining `filename` as the *entire* source for that file. If several cells name the same file with `source:`, the last one in document order wins (each overwrites).
+* `append:filename` - Run this block, *appending* its content to `filename`, so several cells spread through the prose can all contribute to one source file. `source:` and `append:` are mutually exclusive within a single cell.
+* `output:filename` - Run this block, saving output to `filename`, autogenerate source filename if `source`/`append` unspecified
 * `show:filename` - display contents of file in block
 
 Special Supported Language
@@ -200,14 +201,14 @@ part of the core "Planned features" roadmap below.
 - [x] **Modernize for current Nim** — the code is old relative to the latest compiler version; update to modern idioms.
 - [x] **Memory model rewrite** — replace the `ptr ptr string` manual memory scheme with reallocated real strings. Currently, if the file content outgrows its allocated buffer, we must reallocate, copy, and free. This is the right fix but architectural.
 - [x] **`$1` substitution in runtime commands** — allow variables like `g++ -o $1.out $1.cpp && ./$1.out` so compiled languages work cleanly.
-- [ ] **Position cache for unchanged files** — cache the locations of codeblock starts so that if a file hasn't been edited since the last parse, mdnb can use cached positions to write outputs without re-scanning. If the file has been modified, fall back to full PEG parsing.
+- [x] **Position cache for unchanged files** — cache the locations of codeblock starts so that if a file hasn't been edited since the last parse, mdnb can use cached positions to write outputs without re-scanning. If the file has been modified, fall back to full PEG parsing.
 
 ### Planned features
 
 These features have been agreed as the next work. They are grouped by priority.
 
 **Tier 1 — core workflow**
-- [ ] Allow mutually exclusive `source:` vs `append:` codeblock commands. A cell with `source:filename` (as today) defines the single source file for its content. A cell with `append:filename` instead appends its content to the named source file, so several cells spread through the prose can all contribute to one source file. A cell must use exactly one of `source:` / `append:` (not both, not neither if the cell is runnable). This is the supported way to build up a program across multiple prose-separated blocks without persistent kernel state.
+- [x] Allow mutually exclusive `source:` vs `append:` codeblock commands. A cell with `source:filename` defines the single source file for its content (if several cells name the same file, the last one wins). A cell with `append:filename` instead appends its content to the named source file, so several cells spread through the prose can all contribute to one source file. A cell must use exactly one of `source:` / `append:` (not both). This is the supported way to build up a program across multiple prose-separated blocks without persistent kernel state.
 
 **Tier 2 — reliability**
 - [ ] Only act on saves that are at least 1 second apart. If a save arrives less than 1s after the last processed save for that file, ignore it (debounce). Polling every 500ms stays; we will keep using mtime polling rather than native inotify/FSEvents watchers because they are system-limited and mdnb is cross-platform.
