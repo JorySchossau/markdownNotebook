@@ -42,8 +42,24 @@ type Running = object
   outputFile: string         ## the cell's output: path — where captured stdout goes
   started: Time              ## when the cell was launched — for the per-cell timeout
   timeoutSecs: int           ## resolved per-cell timeout in seconds (default 5)
+  cellId: int                ## 1-based cell ordinal at launch — for verbose status
+  command: string            ## resolved shell command that ran — for verbose status
 
 var running: seq[Running]    ## currently-executing cell subprocesses (module-global)
+var verbose: bool            ## set by `-v`/`--verbose`; gates per-run status logging
+
+proc logRunStatus(r: Running; exitCode: int; note = "") =
+  ## Verbose execution status (Tier 3): one line per completed cell run to stdout
+  ## — cell id, the resolved command, exit code, and wall-clock duration. Gated on
+  ## the `-v`/`--verbose` flag (set in `main`) so the default run stays quiet
+  ## ("pure addition, no behavior change"). Called from every reap path: normal
+  ## finish, timeout-kill, and manual `[k]`-kill. For killed cells `note` carries
+  ## the reason (a post-SIGKILL `peekExitCode` is unreliable, often -1), so we
+  ## print that in place of the exit code.
+  if not verbose: return
+  let dur = (getTime() - r.started).inMicroseconds.float / 1_000_000.0
+  let tail = if note.len > 0: note else: "exit " & $exitCode
+  echo &"[mdnb] {r.filename} cell {r.cellId}: '{r.command}' -> {tail} in {dur:.3f}s"
 
 proc anyRunning(filename: string): bool =
   ## True if any in-flight cell belongs to `filename`. Used by the watch loop to
@@ -115,7 +131,10 @@ proc startRun(md: var MarkdownFile; idx: int) =
   let secs = cell.properties.timeout
   running.add Running(p: p, filename: md.filename, language: language,
                       sourceFile: sourceFile, outputFile: outputFile,
-                      started: getTime(), timeoutSecs: secs)
+                      started: getTime(), timeoutSecs: secs,
+                      cellId: cell.id, command: command)
+  if verbose:
+    echo &"[mdnb] {md.filename} cell {cell.id}: launched '{command}' (timeout {secs}s)"
   if cell.properties.state == 'x':
     md.writeCellState(idx, 'r')         # x -> r so the user sees it flipped
 
@@ -123,12 +142,15 @@ proc reapFinished(md: var MarkdownFile; r: Running) =
   ## Read the finished process's stdout, write it to its `output:` file and
   ## into any `show:` cell of the current md, then flip the cell `r` -> `s`.
   var output = r.p.outputStream.readAll.strip
+  let exitCode = r.p.peekExitCode
   r.p.close
   r.outputFile.safeWriteFile(output)
   let showIdx = md.showCellForOutput(r.outputFile)
   if showIdx >= 0:
     md.writeIntoCell(showIdx, if output.len > 0: output else: "(empty output)")
     md.write
+  # Verbose execution status (Tier 3): cell id, command, exit code, duration.
+  r.logRunStatus(exitCode)
   # Flip the producing cell's state r -> s so the user sees it settled.
   for i, c in md.cells:
     if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
@@ -141,7 +163,7 @@ proc reapTimeout(md: var MarkdownFile; r: Running) =
   ## matching `show:` cell. Mirrors `reapFinished` but substitutes the notice for
   ## the (incomplete, possibly empty) captured output.
   osproc.kill(r.p)
-  discard r.p.peekExitCode
+  let exitCode = r.p.peekExitCode
   r.p.close
   let notice = &"(mdnb killed this cell: exceeded timeout:{r.timeoutSecs}s)"
   r.outputFile.safeWriteFile(notice)
@@ -149,6 +171,8 @@ proc reapTimeout(md: var MarkdownFile; r: Running) =
   if showIdx >= 0:
     md.writeIntoCell(showIdx, notice)
     md.write
+  # Verbose execution status (Tier 3): the killed cell still gets a status line.
+  r.logRunStatus(exitCode, note = &"killed (timeout:{r.timeoutSecs}s)")
   for i, c in md.cells:
     if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
       md.writeCellState(i, 's')
@@ -170,8 +194,10 @@ proc pollRuns(md: var MarkdownFile) =
           # and flip the cell's state k -> s — both on disk and in memory, so the
           # run-launch pass below doesn't immediately re-launch this cell.
           osproc.kill(running[j].p)
-          discard running[j].p.peekExitCode
+          let exitCode = running[j].p.peekExitCode
           running[j].p.close
+          # Verbose execution status (Tier 3): report the manually-killed cell.
+          running[j].logRunStatus(exitCode, note = "killed ([k])")
           running.delete j
           md.cells[i].properties.state = 's'
           md.writeCellState(i, 's')

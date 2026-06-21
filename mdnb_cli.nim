@@ -29,9 +29,15 @@ proc main =
   if params.anyIt(it == "-o"):
     looping = false
     params.keepItIf(it != "-o")
+  # Verbose execution status (Tier 3): `-v`/`--verbose` enables per-run status
+  # logging to stdout (cell id, resolved command, exit code, duration). Off by
+  # default so a normal run is unchanged.
+  if params.anyIt(it in ["-v", "--verbose"]):
+    verbose = true
+    params.keepItIf(it notin ["-v", "--verbose"])
 
   if params.len == 0 or not params.allIt(fileExists(it)):
-    echo "Error: specify markdown filename(s) and optionally -o for run once"
+    echo "Error: specify markdown filename(s), optionally -o (run once), -v/--verbose (status)"
     quit()
 
   var modTimes = newSeq[Time](params.len)

@@ -37,6 +37,10 @@ Here are the steps:
 ./mdnb myMarkdownFile.md (...more markdown files)
 ~~~
 
+Optional flags:
+* `-o` — run once and exit (also forces a clean build) instead of watching.
+* `-v` / `--verbose` — print execution status to stdout: for every cell run, the cell id, the resolved system command, the exit code (or kill reason), and how long it took. Off by default so a normal run is quiet. Combine freely, e.g. `./mdnb -o -v myMarkdownFile.md`.
+
 Then, open your markdown files in your favorite editor and `save` the file to update the code interpretation. Let's say you want to run bash and python code. You can make mdnb aware of such code blocks, and customize how that code is run through the YAML header. The full example is below, and the resulting transformed version is shown below that.
 
 The frontmatter includes the ability to define different language codeblocks. The format is `code: <lang_name> <file_ext> <system_command>`
@@ -227,7 +231,7 @@ These features have been agreed as the next work. They are grouped by priority.
 - [x] Add a `timeout:N` codeblock command to set a per-cell timeout in N seconds. If a cell exceeds its timeout it should be killed. If `timeout:` is unspecified, default to 5 seconds. If killed, then the output should go to the output file for that codeblock that this happened and what the timeout limit was, so the user can see what and why.
 
 **Tier 3 — usability**
-- [ ] Surface execution status in the output, e.g. for each run: which cell, the system command, the exit code, and how long it took. Add this as debug/verbose output alongside the existing run.
+- [x] Surface execution status in the output, e.g. for each run: which cell, the system command, the exit code, and how long it took. Add this as debug/verbose output alongside the existing run. Gated on the new `-v` / `--verbose` flag so a normal run is unchanged; with it, mdnb prints one line per launched cell (cell id, resolved command, timeout) and one line per finished/killed cell (cell id, command, exit code or kill reason, wall-clock duration) to stdout.
 - [ ] Add a `trim:head:N` and `trim:tail:N` codeblock command to truncate output to the first or last N lines before it is written back. Default to `trim:head:50` so large outputs do not burden the source file or the mdnb server. This default applies when no `trim:` is given.
 - [ ] Add an `unsafe` codeblock command. By default, refuse to run a cell whose command or content matches a destructive pattern (e.g. `rm -rf`, `mkfs`, force-format) and report it in the file. A cell marked `unsafe` opts in and will run regardless.
 - [ ] Report errors on non-zero exit codes. When a system command does not exit cleanly, show the error in the resulting file so it will be displayed if the user created a `show:file` block for that output.
