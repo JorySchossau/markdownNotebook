@@ -197,6 +197,19 @@ proc collateSources(md: var MarkdownFile) =
     md.cellsWritingToSource[source] = md.cellsWritingToSource.getOrDefault(source) + 1
 
 proc markDirtyCells(md: var MarkdownFile) =
+  ## Mark a code cell dirty if its own source/output file is missing or the
+  ## regenerated source would differ from what's on disk (as before), and then
+  ## propagate that through the cell dependency graph: a cell is also dirty when
+  ## a cell whose `output:` it consumes has changed.
+  ##
+  ## The dependency edge is `header:` -> `output:`: a cell declares what it
+  ## consumes via `header:<file>`, and depends on any cell that `output:`s that
+  ## same file. (`header:` is the right signal here precisely because mdnb never
+  ## writes a cell's header file — it is a pure input — whereas a cell's own
+  ## `source:`/`output:` are files it *writes*, so those would be write/write
+  ## conflicts, not dependencies.) Propagation runs to a fixed point so chains
+  ## are covered. It is safe to over-approximate dirtiness (an extra rerun is
+  ## correct); the opposite (a stale cell) is the bug.
   for i in 0 ..< md.cells.len:
     if not md.cells[i].properties.code: continue
     let source = md.cells[i].properties.source.get
@@ -205,6 +218,23 @@ proc markDirtyCells(md: var MarkdownFile) =
       md.cells[i].properties.dirty = true
     elif readFile(source) != md.sources[source]:
       md.cells[i].properties.dirty = true
+  # Producer index keyed by produced file. A cell produces its `output:` file.
+  var producer: Table[string, int]
+  for i, cell in md.cells:
+    if cell.properties.code and cell.properties.output.isSome:
+      producer[cell.properties.output.get] = i
+  # Fixed-point propagation: a clean cell becomes dirty when a cell producing
+  # one of its `header:` inputs is dirty.
+  var changed = true
+  while changed:
+    changed = false
+    for i, cell in md.cells:
+      if not cell.properties.code or cell.properties.dirty: continue
+      if cell.properties.header.isNone: continue
+      let dep = producer.getOrDefault(cell.properties.header.get, -1)
+      if dep >= 0 and md.cells[dep].properties.dirty:
+        md.cells[i].properties.dirty = true
+        changed = true
 
 proc write(md: MarkdownFile) = md.filename.safeWriteFile(md.buf[])
 
