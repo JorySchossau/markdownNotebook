@@ -40,7 +40,7 @@ Here are the steps:
 Then, open your markdown files in your favorite editor and `save` the file to update the code interpretation. Let's say you want to run bash and python code. You can make mdnb aware of such code blocks, and customize how that code is run through the YAML header. The full example is below, and the resulting transformed version is shown below that.
 
 The frontmatter includes the ability to define different language codeblocks. The format is `code: <lang_name> <file_ext> <system_command>`
-That is, the lang_name is the short name for the language, used possibly also conveniently as the code block markdown renderer syntax highlighting language name. file_ext is the file extension to use when saving to a temporary file in the current directory. system_command is the system command to which to pass the temporary filename to run the interpreter or compiler. Eventually we should add a `$1` format to the system_command because it's possible we will want to make a long command that is both compiling and then running the resulting executable.
+That is, the lang_name is the short name for the language, used possibly also conveniently as the code block markdown renderer syntax highlighting language name. file_ext is the file extension to use when saving to a temporary file in the current directory. system_command is the system command to which to pass the temporary filename to run the interpreter or compiler. The system_command may use `$1` as a placeholder for the source filename with its extension removed; each occurrence is replaced with that base path before running. This lets a single command both compile and run, e.g. `g++ -o $1.out $1.cpp && ./$1.out`. When `$1` is absent, the source filename is appended to the command (the default for interpreters like `python -OO`).
 
 ~~~
 ---
@@ -171,6 +171,9 @@ YAML Header Commands
   id - the markdown language identifier you want to support in this file
   ext - the file extension of this filetype, used when saving source files
   command - the command to run for this filetype
+    Use `$1` as a placeholder for the source filename without its extension
+    (e.g. `g++ -o $1.out $1.cpp && ./$1.out`). When `$1` is absent, the source
+    filename is appended to the command instead.
 
 Code Fence Commands
 * `source` - Run this block, autogenerate source filename, ignore output
@@ -196,7 +199,7 @@ part of the core "Planned features" roadmap below.
 - [x] Make md filename part of temp filenames
 - [x] **Modernize for current Nim** — the code is old relative to the latest compiler version; update to modern idioms.
 - [x] **Memory model rewrite** — replace the `ptr ptr string` manual memory scheme with reallocated real strings. Currently, if the file content outgrows its allocated buffer, we must reallocate, copy, and free. This is the right fix but architectural.
-- [ ] **`$1` substitution in runtime commands** — allow variables like `g++ -o $1.out $1.cpp && ./$1.out` so compiled languages work cleanly.
+- [x] **`$1` substitution in runtime commands** — allow variables like `g++ -o $1.out $1.cpp && ./$1.out` so compiled languages work cleanly.
 - [ ] **Position cache for unchanged files** — cache the locations of codeblock starts so that if a file hasn't been edited since the last parse, mdnb can use cached positions to write outputs without re-scanning. If the file has been modified, fall back to full PEG parsing.
 
 ### Planned features

@@ -10,7 +10,7 @@ let
     mdlangid <- \w*
     langext <- (\w  /  '.')*
     runcmd <- quoted_cmd  /  unquoted_cmd
-    quoted_cmd <- \" {(CommandChars  /  \s)*} \"
+    quoted_cmd <- \" {(!\n !\" .)*} \"
     unquoted_cmd <- {CommandChars*}
     CommandChars <- !\n !\" \w  /  '.'  /  ':'  /  '-'  /  '/'  /  '\\'
     """
@@ -174,6 +174,18 @@ proc showWaitMessages(md: var MarkdownFile) =
         md.writeIntoCell(i, "(please wait)")
   md.write
 
+proc buildCommand(command, sourceFilename: string): string =
+  ## Build the shell command for a cell. If `command` contains `$1`, every
+  ## occurrence is replaced by `sourceFilename` with its extension stripped
+  ## (e.g. `temp/demo_src1.cpp` -> `temp/demo_src1`), so compiled-language
+  ## commands like `g++ -o $1.out $1.cpp && ./$1.out` work. Otherwise the
+  ## source filename is appended to the command, as before.
+  if "$1" in command:
+    let (dir, name, _) = sourceFilename.splitFile
+    command.replace("$1", dir / name)
+  else:
+    command & ' ' & sourceFilename
+
 proc runCells(md: var MarkdownFile) =
   createDir "temp"
   for i, cell in md.cells:
@@ -183,7 +195,7 @@ proc runCells(md: var MarkdownFile) =
       sourceFilename.safeWriteFile(md.sources[sourceFilename])
       let language = cell.properties.language.get
       if language != "raw":
-        let command = md.runtimes[language].command & ' ' & sourceFilename
+        let command = buildCommand(md.runtimes[language].command, sourceFilename)
         outFilename.safeWriteFile(strip(execProcess(command)))
     elif not cell.properties.code:
       let target = cell.properties.show.get
