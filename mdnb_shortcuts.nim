@@ -1,12 +1,16 @@
 ## Shortcut expansion and clean build. `replaceShortcuts` rewrites bare
-## `show:file` text (to an image link or a `show:` block) and `:clean` lines,
-## running in the gaps between already-parsed cells; `clearAllFiles` is the
-## `:clean` handler that deletes every generated source/output file.
+## `show:file` text (to an image link or an empty `show:` block) and `:clean`
+## lines, running in the gaps between already-parsed cells; `clearAllFiles` is
+## the `:clean` handler that deletes every generated source/output file.
+##
+## A bare `show:file` (non-image) is expanded to an *empty* `show:` block; the
+## file's contents are read in later by `runCells`, streamed through the cell's
+## trim window so an enormous file is never pulled fully into the buffer here.
 proc replaceShortcuts(md: var MarkdownFile) =
   var pos: tuple[first, last: int]
   var endPrevChunk, startNextChunk = 0
   var matches = newSeq[string](1)
-  let (showimg, clean, showtxt) = ("![$1]($1)\n", "", "```show:$1\n$2\n```\n")
+  let (showimg, clean) = ("![$1]($1)\n", "")
   for cell_i in 0 .. md.cells.len:
     startNextChunk = if cell_i == md.cells.len: md.buf[].len - 1
                      else: md.cells[cell_i].rng.a
@@ -17,12 +21,14 @@ proc replaceShortcuts(md: var MarkdownFile) =
         pos = md.buf[][endPrevChunk .. startNextChunk].findBounds(pattern, matches, start = pos.last)
         if pos.first == -1: break
         let fragpos = (endPrevChunk + pos.first + 1, endPrevChunk + pos.last)
-        var newvalue: string
-        if replacement == clean or (replacement == showimg and splitFile(matches[0]).ext in imageExt):
-          newvalue = replacement % matches
-        else:
-          let contents = if fileExists(matches[0]): readFile(matches[0]) else: "```show:$1\n```\n"
-          newvalue = showtxt % [matches[0], contents]
+        let newvalue =
+          if replacement == clean or
+             (replacement == showimg and splitFile(matches[0]).ext in imageExt):
+            replacement % matches
+          else:
+            # Non-image bare `show:file`: emit an empty `show:` block whose body
+            # `runCells` fills by streaming the file through its trim window.
+            "```show:" & matches[0] & "\n```\n"
         let deltaOffset = newvalue.len - (fragpos[1] - fragpos[0]) - 1
         md.buf[] = md.buf[][0 .. fragpos[0] - 1] & newvalue & md.buf[][fragpos[1] + 1 .. ^1]
         pos = (pos.first, pos.first + newvalue.len)

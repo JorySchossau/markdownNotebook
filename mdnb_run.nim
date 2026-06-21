@@ -42,8 +42,6 @@ type Running = object
   outputFile: string         ## the cell's output: path — where captured stdout goes
   started: Time              ## when the cell was launched — for the per-cell timeout
   timeoutSecs: int           ## resolved per-cell timeout in seconds (default 5)
-  trimTail: bool             ## resolved `trim:tail,N` vs `trim:head,N` (default head)
-  trimLines: int             ## resolved per-cell trim line count (default 50)
   cellId: int                ## 1-based cell ordinal at launch — for verbose status
   command: string            ## resolved shell command that ran — for verbose status
 
@@ -98,6 +96,16 @@ proc showCellForOutput(md: MarkdownFile; outputFile: string): int =
       return i
   -1
 
+proc cellWithSource(md: MarkdownFile; sourceFile: string): CellProperties =
+  ## The `CellProperties` of the code cell that writes `sourceFile`. Used to find
+  ## the `trim:` settings that should govern a `show:` cell's display of that
+  ## cell's output — the producer carries the trim window so the show block
+  ## doesn't have to redeclare it. Returns a default (head,50) if not found.
+  for c in md.cells:
+    if c.properties.code and c.properties.source == sourceFile:
+      return c.properties
+  CellProperties(trimLines: defaultTrimLines)
+
 proc cellShouldRun(cell: Cell): bool =
   ## Decide whether a code cell runs this pass under the layered `[ ]` model:
   ## dirty-driven auto-run stays the default (a cell with no `[ ]` or stopped
@@ -134,44 +142,83 @@ proc startRun(md: var MarkdownFile; idx: int) =
   running.add Running(p: p, filename: md.filename, language: language,
                       sourceFile: sourceFile, outputFile: outputFile,
                       started: getTime(), timeoutSecs: secs,
-                      trimTail: cell.properties.trimTail,
-                      trimLines: cell.properties.trimLines,
                       cellId: cell.id, command: command)
   if verbose:
     echo &"[mdnb] {md.filename} cell {cell.id}: launched '{command}' (timeout {secs}s)"
   if cell.properties.state == 'x':
     md.writeCellState(idx, 'r')         # x -> r so the user sees it flipped
 
-proc applyTrim(output: string; tail: bool; n: int): string =
-  ## Truncate captured output to the first (`tail == false`) or last
-  ## (`tail == true`) `n` lines before it is written back, so large outputs don't
-  ## bloat the file. A no-op when the output already fits. When lines are actually
-  ## dropped, a footer naming the trim mode, the limit, and how many lines were
-  ## cut is appended — consistent with how `timeout:` reports kills. Default
-  ## `trim:head,50` (resolved in `processBodyForCells`) bounds every cell.
-  if output.len == 0: return output
-  let lines = output.split('\n')
-  if lines.len <= n: return output
-  let dropped = lines.len - n
-  let mode = if tail: "tail" else: "head"
-  let kept = if tail: lines[lines.len - n .. ^1] else: lines[0 ..< n]
-  kept.join("\n") & &"\n... (trim:{mode},{n} — {dropped} lines truncated)"
+proc readTrimmed(s: Stream; tail: bool; n: int): string =
+  ## Stream a source (a process pipe or a file) through a trim window so an
+  ## enormous input is never read fully into memory before the lines to keep are
+  ## chosen:
+  ##   - `head` (`tail == false`): keep the first `n` lines, then *stop reading*.
+  ##     The rest of the stream is left unread, so the cost scales with `n`, not
+  ##     with the input size. (The exact number of lines cut is therefore
+  ##     unknown — the footer reports that further content was truncated, without
+  ##     a count, rather than draining the whole stream just to count it.)
+  ##   - `tail` (`tail == true`): read the whole stream but retain only the last
+  ##     `n` lines in a rolling buffer, so peak memory is still `n` lines, not
+  ##     the input size. The exact count cut is reported.
+  ## A no-op (no footer) when the content already fits, and a one-line footer
+  ## naming the mode and limit appended when lines are actually dropped. Default
+  ## `trim:head,50` (resolved in `processBodyForCells`) bounds every `show:` cell.
+  if n <= 0: return ""
+  if not tail:
+    var kept: seq[string] = @[]
+    while kept.len < n and not s.atEnd:
+      kept.add(s.readLine())          # read only as many lines as we keep
+    if kept.len == 0: return ""
+    let core = kept.join("\n").strip()  # bounded by n lines — never the raw stream
+    if core.len == 0: return ""         # whitespace-only content reads as empty
+    if s.atEnd: return core             # content fit within n lines — no footer
+    core & &"\n... (trim:head,{n} — further content truncated)"
+  else:
+    var ring = newSeq[string](n)        # rolling buffer of the last n lines
+    var filled = 0
+    var pos = 0                         # write cursor once the ring is full
+    var total = 0
+    while not s.atEnd:
+      let line = s.readLine()
+      inc total
+      if filled < n:
+        ring[filled] = line; inc filled
+      else:
+        ring[pos] = line; pos = (pos + 1) mod n
+    if total == 0: return ""
+    var kept: seq[string]
+    if filled < n: kept = ring[0 ..< filled]
+    else:
+      kept = newSeq[string](n)
+      for k in 0 ..< n: kept[k] = ring[(pos + k) mod n]   # unwind to original order
+    let core = kept.join("\n").strip()
+    if core.len == 0: return ""
+    if total > n:
+      core & &"\n... (trim:tail,{n} — {total - n} lines truncated)"
+    else: core
 
 proc reapFinished(md: var MarkdownFile; r: Running) =
-  ## Read the finished process's stdout, write it to its `output:` file and
-  ## into any `show:` cell of the current md, then flip the cell `r` -> `s`.
-  var output = r.p.outputStream.readAll.strip
-  # Apply output truncation (Tier 3) before any write so both the `output:` file
-  # and the matching `show:` cell get the same trimmed content. Notices mdnb
-  # authors itself (the timeout-kill notice, `(please wait)`, `(empty output)`)
-  # bypass this — only captured subprocess output is trimmed.
-  output = applyTrim(output, r.trimTail, r.trimLines)
+  ## Read the finished process's stdout, write it in full to its `output:` file,
+  ## write a trimmed view into any matching `show:` cell of the current md, then
+  ## flip the cell `r` -> `s`. The on-disk `output:` file is intentionally
+  ## untrimmed — it holds the real, complete output. Trimming is a display
+  # concern: it's applied only when content is read into a `show:` cell, so the
+  # source of truth on disk is never truncated. Notices mdnb authors itself
+  # (the timeout-kill notice, `(please wait)`, `(empty output)`) are written
+  # verbatim — only captured subprocess output is trimmed for display.
+  let raw = r.p.outputStream.readAll.strip
   let exitCode = r.p.peekExitCode
   r.p.close
-  r.outputFile.safeWriteFile(output)
+  r.outputFile.safeWriteFile(raw)
   let showIdx = md.showCellForOutput(r.outputFile)
   if showIdx >= 0:
-    md.writeIntoCell(showIdx, if output.len > 0: output else: "(empty output)")
+    # Stream the full output through the producer cell's trim window for display.
+    # The producer cell carries the `trim:` settings (resolved at parse time) so
+    # the `show:` cell reflects them without the user having to redeclare `trim:`
+    # on the show block.
+    let props = cellWithSource(md, r.sourceFile)
+    let shown = readTrimmed(newStringStream(raw), props.trimTail, props.trimLines)
+    md.writeIntoCell(showIdx, if shown.len > 0: shown else: "(empty output)")
     md.write
   # Verbose execution status (Tier 3): cell id, command, exit code, duration.
   r.logRunStatus(exitCode)
@@ -253,13 +300,23 @@ proc runCells(md: var MarkdownFile) =
   createDir "temp"
   md.pollRuns
   for i, cell in md.cells:
-    if cellShouldRun(cell): md.startRun(i)
+    if cellShouldRun(cell):
+      md.startRun(i)
     elif not cell.properties.code:
       # Non-runnable `show:` cell: read its file back in if it already exists
-      # (e.g. output landed on a previous pass, or from a prior session). This
-      # mirrors the pre-async behavior. Cells whose producer is still running
-      # get their freshest output on a later cycle via reapFinished.
+      # (e.g. output landed on a previous pass, or from a prior session). The
+      # file is streamed through the cell's trim window (`trim:head,N` /
+      # `trim:tail,N`, default `head,50`) so an enormous file is never read
+      # fully into memory and the markdown only ever shows the trimmed view —
+      # the on-disk file stays the complete source of truth. Cells whose
+      # producer is still running get their freshest output on a later cycle
+      # via reapFinished.
       let target = cell.properties.show
       if fileExists(target):
-        md.writeIntoCell(i, strip(readFile(target), chars = {' ', '\n'}))
-        md.write
+        let fs = newFileStream(target, fmRead)
+        if fs != nil:
+          let shown = readTrimmed(fs, cell.properties.trimTail,
+                                  cell.properties.trimLines)
+          fs.close
+          md.writeIntoCell(i, shown)
+          md.write
