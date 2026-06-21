@@ -21,7 +21,7 @@ let
     upTo3WS <- !\n \s? !\n \s? !\n \s?
     command <- word ':' quoted_string   /   word ':' word   /   word
     quoted_string <- \" ( !\" .)+ \"
-    word <- (\w / \/ / \\ / \. / \-)+
+    word <- (\w / \/ / \\ / \. / \- / \,)+
     codefenceend <- \n upTo3WS $1 (!\n \s)* \n
     """
   bareShowPattern = peg"""\n (!\n \s)* "show:" {(\w / '.' / '-' / ':' / '/' / '\\')*} (!\n \s)* \n"""
@@ -43,7 +43,8 @@ type CellProperties = object
   dirty: bool
   code: bool
   isAppend: bool
-  language, header, output, source, show: Option[string]
+  inputs: seq[string]
+  language, output, source, show: Option[string]
 
 type Cell = object
   id: int
@@ -137,7 +138,7 @@ proc processBodyForCells(md: var MarkdownFile) =
           props.code = true
           props.isAppend = true
           props.source = some(command[1])
-      of "output", "show", "header":
+      of "output", "show", "inputs":
         if command.len != 2:
           echo "Skipping cell: argument required: 'command:argument'"
           invalid = true
@@ -146,7 +147,7 @@ proc processBodyForCells(md: var MarkdownFile) =
           props.code = true
           props.output = some(command[1])
         of "show": props.show = some(command[1])
-        of "header": props.header = some(command[1])
+        of "inputs": props.inputs = command[1].split(',')
         else: discard
       else: discard
     if props.code and props.language.isNone: invalid = true
@@ -202,14 +203,15 @@ proc markDirtyCells(md: var MarkdownFile) =
   ## propagate that through the cell dependency graph: a cell is also dirty when
   ## a cell whose `output:` it consumes has changed.
   ##
-  ## The dependency edge is `header:` -> `output:`: a cell declares what it
-  ## consumes via `header:<file>`, and depends on any cell that `output:`s that
-  ## same file. (`header:` is the right signal here precisely because mdnb never
-  ## writes a cell's header file — it is a pure input — whereas a cell's own
-  ## `source:`/`output:` are files it *writes*, so those would be write/write
-  ## conflicts, not dependencies.) Propagation runs to a fixed point so chains
-  ## are covered. It is safe to over-approximate dirtiness (an extra rerun is
-  ## correct); the opposite (a stale cell) is the bug.
+  ## The dependency edge is `inputs:` -> `output:`: a cell declares what it
+  ## consumes via `inputs:f1,f2,...` (comma-separated, no spaces), and depends on
+  ## any cell that `output:`s one of those files. (`inputs:` is the right signal
+  ## here precisely because mdnb never writes a cell's input files — they are
+  ## pure inputs — whereas a cell's own `source:`/`output:` are files it
+  ## *writes*, so those would be write/write conflicts, not dependencies.)
+  ## Propagation runs to a fixed point so chains are covered. It is safe to
+  ## over-approximate dirtiness (an extra rerun is correct); the opposite (a
+  ## stale cell) is the bug.
   for i in 0 ..< md.cells.len:
     if not md.cells[i].properties.code: continue
     let source = md.cells[i].properties.source.get
@@ -224,17 +226,18 @@ proc markDirtyCells(md: var MarkdownFile) =
     if cell.properties.code and cell.properties.output.isSome:
       producer[cell.properties.output.get] = i
   # Fixed-point propagation: a clean cell becomes dirty when a cell producing
-  # one of its `header:` inputs is dirty.
+  # any of its `inputs:` files is dirty.
   var changed = true
   while changed:
     changed = false
     for i, cell in md.cells:
       if not cell.properties.code or cell.properties.dirty: continue
-      if cell.properties.header.isNone: continue
-      let dep = producer.getOrDefault(cell.properties.header.get, -1)
-      if dep >= 0 and md.cells[dep].properties.dirty:
-        md.cells[i].properties.dirty = true
-        changed = true
+      for input in cell.properties.inputs:
+        let dep = producer.getOrDefault(input, -1)
+        if dep >= 0 and md.cells[dep].properties.dirty:
+          md.cells[i].properties.dirty = true
+          changed = true
+          break
 
 proc write(md: MarkdownFile) = md.filename.safeWriteFile(md.buf[])
 
