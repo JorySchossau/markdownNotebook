@@ -1,12 +1,22 @@
 ## The data model: the four core types plus the buffer-mutation primitives that
 ## splice text into a cell while patching every later cell's byte offset. See
 ## agents.md §5 for the model overview and the `ref string` buffer rationale.
+##
+## Plain-old-data fields, not `Option[T]`: every value has a logical default, so
+## `nil` doesn't add meaning. The four string fields default to `""` and are
+## simply checked with `.len == 0` (a cell with no `output:` has an empty
+## `output`, etc.). `timeout` defaults to `defaultTimeout` seconds and is read
+## directly. This keeps the data model free of the unwrap/`some` ceremony that
+## `Option[T]` would force on every call site.
+const defaultTimeout = 5   ## seconds; the `timeout:` a cell gets when it has none
+
 type CellProperties = object
   dirty: bool
   code: bool
   isAppend: bool
   inputs: seq[string]
-  language, output, source, show: Option[string]
+  language, output, source, show: string   ## "" = absent (no such command given)
+  timeout: int   ## `timeout:N` in seconds; defaults to `defaultTimeout`.
   state: char   ## `[ ]` field after the lang/id in the info string (see §7/§12).
                ## '\0' = absent: dirty-driven auto-run (today's behavior).
                ## 's' = stopped (won't auto-run), 'r' = running (mdnb-set),

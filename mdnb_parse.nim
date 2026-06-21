@@ -49,7 +49,7 @@ proc processBodyForCells(md: var MarkdownFile) =
       if i == 0: continue
       if match.len == 0: break
       if i == 1 and (match in md.runtimes or match == "raw"):
-        props.language = some(match)
+        props.language = match
       # `[ ]` state field: a single-char token wrapped in brackets (states
       # s/r/x/k). The grammar only emits valid states (see stateField), so an
       # unrecognized bracketed token means the user mistyped and the cell is
@@ -69,9 +69,9 @@ proc processBodyForCells(md: var MarkdownFile) =
           invalid = true
         else:
           props.code = true
-          if command.len == 2: props.source = some(command[1])
+          if command.len == 2: props.source = command[1]
       of "append":
-        if props.source.isSome:
+        if props.source.len > 0:
           echo "Skipping cell: 'source:' and 'append:' are mutually exclusive"
           invalid = true
         elif command.len != 2:
@@ -80,7 +80,7 @@ proc processBodyForCells(md: var MarkdownFile) =
         else:
           props.code = true
           props.isAppend = true
-          props.source = some(command[1])
+          props.source = command[1]
       of "output", "show", "inputs":
         if command.len != 2:
           echo "Skipping cell: argument required: 'command:argument'"
@@ -88,17 +88,29 @@ proc processBodyForCells(md: var MarkdownFile) =
         case command[0]
         of "output":
           props.code = true
-          props.output = some(command[1])
-        of "show": props.show = some(command[1])
+          props.output = command[1]
+        of "show": props.show = command[1]
         of "inputs": props.inputs = command[1].split(',')
         else: discard
+      of "timeout":
+        if command.len != 2:
+          echo "Skipping cell: argument required: 'timeout:N' (seconds)"
+          invalid = true
+        else:
+          try: props.timeout = parseInt(command[1])
+          except ValueError:
+            echo &"Skipping cell: 'timeout:N' expects an integer, got '{command[1]}'"
+            invalid = true
       else: discard
-    if props.code and props.language.isNone: invalid = true
+    # `timeout:N` is optional; resolve the default for every cell up front so
+    # the execution layer can read it unconditionally.
+    if props.timeout == 0: props.timeout = defaultTimeout
+    if props.code and props.language.len == 0: invalid = true
     if invalid: continue
-    if props.code and props.source.isNone:
-      props.source = some("temp" / &"{splitFile(md.filename).name}_src{cellid}{md.runtimes[props.language.get].extension}")
-    if props.code and props.output.isNone:
-      props.output = some("temp" / &"{splitFile(md.filename).name}_src{cellid}.txt")
+    if props.code and props.source.len == 0:
+      props.source = "temp" / &"{splitFile(md.filename).name}_src{cellid}{md.runtimes[props.language].extension}"
+    if props.code and props.output.len == 0:
+      props.output = "temp" / &"{splitFile(md.filename).name}_src{cellid}.txt"
     let contentStart = buf[].find(chars = {'\n'}, start = pos.first + 2)
     var contentEnd = buf[].rfind(chars = {'\n'}, last = pos.last - 1)
     if contentEnd <= contentStart: contentEnd = contentStart

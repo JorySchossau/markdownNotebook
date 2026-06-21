@@ -13,7 +13,7 @@ proc collateSources(md: var MarkdownFile) =
   ## per cell, so they can't collide.
   for cell in md.cells:
     if not cell.properties.code: continue
-    let source = cell.properties.source.get
+    let source = cell.properties.source
     if cell.properties.isAppend:
       md.sources[source] = md.sources.getOrDefault(source) & md.content(cell) & '\n'
     else:
@@ -37,8 +37,8 @@ proc markDirtyCells(md: var MarkdownFile) =
   ## stale cell) is the bug.
   for i in 0 ..< md.cells.len:
     if not md.cells[i].properties.code: continue
-    let source = md.cells[i].properties.source.get
-    let output = md.cells[i].properties.output.get
+    let source = md.cells[i].properties.source
+    let output = md.cells[i].properties.output
     if not fileExists(source) or not fileExists(output):
       md.cells[i].properties.dirty = true
     elif readFile(source) != md.sources[source]:
@@ -46,8 +46,8 @@ proc markDirtyCells(md: var MarkdownFile) =
   # Producer index keyed by produced file. A cell produces its `output:` file.
   var producer: Table[string, int]
   for i, cell in md.cells:
-    if cell.properties.code and cell.properties.output.isSome:
-      producer[cell.properties.output.get] = i
+    if cell.properties.code and cell.properties.output.len > 0:
+      producer[cell.properties.output] = i
   # Fixed-point propagation: a clean cell becomes dirty when a cell producing
   # any of its `inputs:` files is dirty.
   var changed = true

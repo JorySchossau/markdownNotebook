@@ -36,8 +36,8 @@ proc clearAllFiles(md: MarkdownFile) =
   var seen: HashSet[string]
   for cell in md.cells:
     if cell.properties.code:
-      let source = cell.properties.source.get
+      let source = cell.properties.source
       if source notin seen:
         seen.incl source
         removeFile(source)
-      removeFile(cell.properties.output.get)
+      removeFile(cell.properties.output)

@@ -6,6 +6,13 @@
 ## further saves (Tier 2 async item — see agents.md §8/§12). The `[ ]` state
 ## field (`s`/`r`/`x`/`k`) layers manual control on top of the dirty-driven
 ## auto-run default; existing notebooks keep working unchanged.
+##
+## Per-cell timeout (Tier 2): every launched cell is bounded by `timeout:N`
+## seconds (default `defaultTimeout`, set in mdnb_types.nim). `pollRuns` checks
+## each in-flight cell on every cycle and kills any that have exceeded their
+## limit, writing a notice into the output file (and any matching `show:` cell)
+## so the user sees what happened and why.
+
 proc buildCommand(command, sourceFilename: string): string =
   ## Build the shell command for a cell. If `command` contains `$1`, every
   ## occurrence is replaced by `sourceFilename` with its extension stripped
@@ -33,6 +40,8 @@ type Running = object
   language: string           ## runtime language id (for buildCommand lookup at start)
   sourceFile: string         ## the cell's source path — also our identity key
   outputFile: string         ## the cell's output: path — where captured stdout goes
+  started: Time              ## when the cell was launched — for the per-cell timeout
+  timeoutSecs: int           ## resolved per-cell timeout in seconds (default 5)
 
 var running: seq[Running]    ## currently-executing cell subprocesses (module-global)
 
@@ -67,7 +76,7 @@ proc writeCellState(md: var MarkdownFile; idx: int; newState: char) =
 proc showCellForOutput(md: MarkdownFile; outputFile: string): int =
   ## Index of the `show:` cell displaying `outputFile`, or -1 if none.
   for i, c in md.cells:
-    if not c.properties.code and c.properties.show == some(outputFile):
+    if not c.properties.code and c.properties.show == outputFile:
       return i
   -1
 
@@ -89,10 +98,10 @@ proc startRun(md: var MarkdownFile; idx: int) =
   ## the subprocess (or writes output directly for `raw`), records it in
   ## `running`, and flips the cell's state `x` -> `r` in the file.
   let cell = md.cells[idx]
-  let sourceFile = cell.properties.source.get
-  let outputFile = cell.properties.output.get
+  let sourceFile = cell.properties.source
+  let outputFile = cell.properties.output
   sourceFile.safeWriteFile(md.sources[sourceFile])
-  let language = cell.properties.language.get
+  let language = cell.properties.language
   if language == "raw":
     # raw blocks produce no subprocess; their body IS the output. Synchronous.
     md.sources[sourceFile].strip.safeWriteFile(outputFile)
@@ -103,8 +112,10 @@ proc startRun(md: var MarkdownFile; idx: int) =
   # PATH lookups behave exactly as before. poStdErrToStdOut captures stderr into
   # the output too (the pre-async behavior via execProcess's default options).
   let p = startProcess(command, options = {poEvalCommand, poStdErrToStdOut})
+  let secs = cell.properties.timeout
   running.add Running(p: p, filename: md.filename, language: language,
-                      sourceFile: sourceFile, outputFile: outputFile)
+                      sourceFile: sourceFile, outputFile: outputFile,
+                      started: getTime(), timeoutSecs: secs)
   if cell.properties.state == 'x':
     md.writeCellState(idx, 'r')         # x -> r so the user sees it flipped
 
@@ -120,7 +131,26 @@ proc reapFinished(md: var MarkdownFile; r: Running) =
     md.write
   # Flip the producing cell's state r -> s so the user sees it settled.
   for i, c in md.cells:
-    if c.properties.code and c.properties.source == some(r.sourceFile) and c.properties.state == 'r':
+    if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
+      md.writeCellState(i, 's')
+      break
+
+proc reapTimeout(md: var MarkdownFile; r: Running) =
+  ## Kill a cell that exceeded its `timeout:` and write a notice explaining what
+  ## happened and the limit that was hit, into both its `output:` file and any
+  ## matching `show:` cell. Mirrors `reapFinished` but substitutes the notice for
+  ## the (incomplete, possibly empty) captured output.
+  osproc.kill(r.p)
+  discard r.p.peekExitCode
+  r.p.close
+  let notice = &"(mdnb killed this cell: exceeded timeout:{r.timeoutSecs}s)"
+  r.outputFile.safeWriteFile(notice)
+  let showIdx = md.showCellForOutput(r.outputFile)
+  if showIdx >= 0:
+    md.writeIntoCell(showIdx, notice)
+    md.write
+  for i, c in md.cells:
+    if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
       md.writeCellState(i, 's')
       break
 
@@ -134,7 +164,7 @@ proc pollRuns(md: var MarkdownFile) =
   for i, cell in md.cells:
     if cell.properties.code and cell.properties.state == 'k':
       for j, r in running:
-        if r.filename == md.filename and r.sourceFile == cell.properties.source.get:
+        if r.filename == md.filename and r.sourceFile == cell.properties.source:
           # osproc.kill sends SIGKILL (p.close only closes handles and leaves
           # the child orphaned/running). Reap the corpse, drop it from `running`,
           # and flip the cell's state k -> s — both on disk and in memory, so the
@@ -146,11 +176,18 @@ proc pollRuns(md: var MarkdownFile) =
           md.cells[i].properties.state = 's'
           md.writeCellState(i, 's')
           break
-  # Then reap whatever has finished on its own (this file's processes only).
+  # Then reap whatever has finished on its own, or kill any past its timeout
+  # (this file's processes only).
+  let now = getTime()
   var i = 0
   while i < running.len:
     if running[i].filename != md.filename:
       inc i                              # belongs to another watched file
+    elif now - running[i].started >= initDuration(seconds = running[i].timeoutSecs):
+      # Per-cell timeout (Tier 2): exceeded its `timeout:N` (default 5s). Kill,
+      # drop from `running`, and write a notice so the user can see what/why.
+      md.reapTimeout(running[i])
+      running.delete i
     elif running[i].p.peekExitCode == -1:
       inc i   # still running; leave it for a future cycle
     else:
@@ -172,7 +209,7 @@ proc runCells(md: var MarkdownFile) =
       # (e.g. output landed on a previous pass, or from a prior session). This
       # mirrors the pre-async behavior. Cells whose producer is still running
       # get their freshest output on a later cycle via reapFinished.
-      let target = cell.properties.show.get
+      let target = cell.properties.show
       if fileExists(target):
         md.writeIntoCell(i, strip(readFile(target), chars = {' ', '\n'}))
         md.write
