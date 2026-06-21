@@ -194,9 +194,9 @@ part of the core "Planned features" roadmap below.
 - [x] Reimplement / Cleanup
 - [x] Make non-code fence `show` command extension-aware and do the right thing
 - [x] Make md filename part of temp filenames
-- [ ] **Modernize for current Nim** — the code is old relative to the latest compiler version; update to modern idioms.
+- [x] **Modernize for current Nim** — the code is old relative to the latest compiler version; update to modern idioms.
+- [x] **Memory model rewrite** — replace the `ptr ptr string` manual memory scheme with reallocated real strings. Currently, if the file content outgrows its allocated buffer, we must reallocate, copy, and free. This is the right fix but architectural.
 - [ ] **`$1` substitution in runtime commands** — allow variables like `g++ -o $1.out $1.cpp && ./$1.out` so compiled languages work cleanly.
-- [ ] **Memory model rewrite** — replace the `ptr ptr string` manual memory scheme with reallocated real strings. Currently, if the file content outgrows its allocated buffer, we must reallocate, copy, and free. This is the right fix but architectural.
 - [ ] **Position cache for unchanged files** — cache the locations of codeblock starts so that if a file hasn't been edited since the last parse, mdnb can use cached positions to write outputs without re-scanning. If the file has been modified, fall back to full PEG parsing.
 
 ### Planned features
