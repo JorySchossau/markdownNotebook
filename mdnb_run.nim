@@ -249,6 +249,15 @@ proc reapFinished(md: var MarkdownFile; r: var Running) =
   # source of truth on disk is never truncated. Notices mdnb authors itself
   # (the timeout-kill notice, `(please wait)`, `(empty output)`) are written
   # verbatim — only captured subprocess output is trimmed for display.
+  #
+  # Non-zero exit (Tier 3): when the command did not exit cleanly, prepend an
+  # mdnb-authored notice naming the exit code to both the `output:` file and the
+  # `show:` cell, so the failure is unambiguous even when the command printed
+  # nothing. stderr is already merged into the captured output (`poStdErrToStdOut`
+  # in startRun), so the command's own error text is in `raw`; the notice just
+  # flags the failure. The notice is prepended to the captured output and the
+  # combined text is what's trimmed for display, so under the default
+  # `trim:head,N` the notice stays pinned at the top.
   # The bulk of the output was drained incrementally by `pollRuns`/`drainOutput`
   # while the cell ran (to keep the OS pipe from filling and blocking the
   # producer); drain the final tail bytes the process wrote between the last poll
@@ -257,7 +266,15 @@ proc reapFinished(md: var MarkdownFile; r: var Running) =
   let exitCode = r.p.peekExitCode
   r.p.close
   let raw = r.acc.strip
-  r.outputFile.safeWriteFile(raw)
+  let errored = exitCode != 0          # reapFinished is only reached once finished, so != 0 means failed
+  let body =
+    if errored and raw.len > 0:
+      &"(mdnb: cell exited with code {exitCode})\n" & raw
+    elif errored:
+      &"(mdnb: cell exited with code {exitCode})"
+    else:
+      raw
+  r.outputFile.safeWriteFile(body)
   let showIdx = md.showCellForOutput(r.outputFile)
   if showIdx >= 0:
     # Stream the full output through the producer cell's trim window for display.
@@ -265,7 +282,7 @@ proc reapFinished(md: var MarkdownFile; r: var Running) =
     # the `show:` cell reflects them without the user having to redeclare `trim:`
     # on the show block.
     let props = cellWithSource(md, r.sourceFile)
-    let shown = readTrimmed(newStringStream(raw), props.trimTail, props.trimLines)
+    let shown = readTrimmed(newStringStream(body), props.trimTail, props.trimLines)
     md.writeIntoCell(showIdx, if shown.len > 0: shown else: "(empty output)")
     md.write
   # Verbose execution status (Tier 3): cell id, command, exit code, duration.
