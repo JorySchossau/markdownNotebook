@@ -13,7 +13,7 @@ Related tools include:
 
 ## Why?
 
-Jupyter Notebooks are great, but the software is gigantic, and the notebook files are not meant to be viewed directly as text files, making working with code versioning tools an annoying process. Also, you're beholden to whatever kernels exist to let your notebook know how to run your code. Why not use whatever you want for an editor and runnable languages? Also, it was just a quick 1-day hobby project because I wanted it to exist.
+Jupyter Notebooks are great, but the software is gigantic, and the notebook files are not meant to be viewed directly as text files, making working with code versioning tools an annoying process. Also, you're beholden to whatever kernels exist to let your notebook know how to run your code. Why not use whatever you want for an editor and runnable languages?
 
 ## How does it work?
 
@@ -38,6 +38,9 @@ Here are the steps:
 ~~~
 
 Then, open your markdown files in your favorite editor and `save` the file to update the code interpretation. Let's say you want to run bash and python code. You can make mdnb aware of such code blocks, and customize how that code is run through the YAML header. The full example is below, and the resulting transformed version is shown below that.
+
+The frontmatter includes the ability to define different language codeblocks. The format is `code: <lang_name> <file_ext> <system_command>`
+That is, the lang_name is the short name for the language, used possibly also conveniently as the code block markdown renderer syntax highlighting language name. file_ext is the file extension to use when saving to a temporary file in the current directory. system_command is the system command to which to pass the temporary filename to run the interpreter or compiler. Eventually we should add a `$1` format to the system_command because it's possible we will want to make a long command that is both compiling and then running the resulting executable.
 
 ~~~
 ---
@@ -150,8 +153,6 @@ image.save("cow.png")
 
 ## Compiling
 
-I'll add precompmiled binaries soon, but for now you can compile it yourself. Seriously, it's easy with Nim.
-
 ```sh
 git clone https://github.com/JorySchossau/markdownNotebook
 cd markdownNotebook
@@ -182,14 +183,47 @@ Special Supported Language
 
 Non-Code Fence Commands
 * `show:filename` - replace this text with a markdown hyperlink to `filename` if image, or a codeblock if not an image
-* `:clean` - on a line of its own, this will be removed and a all cells rerun
+* `:clean` - on a line of its own. When mdnb next processes the file, this line is removed, every generated source and output file for the code cells in this file is deleted, and all cells are rerun from scratch. Use it to force a full fresh build; a normal save only reruns cells whose source or output is missing or would change.
 ```
 
 ## To-Do
+
+The smaller-scope and architectural items that are ready to work on but are not
+part of the core "Planned features" roadmap below.
+
 - [x] Reimplement / Cleanup
 - [x] Make non-code fence `show` command extension-aware and do the right thing
 - [x] Make md filename part of temp filenames
-- [ ] CI releases when stable
+- [ ] **Modernize for current Nim** — the code is old relative to the latest compiler version; update to modern idioms.
+- [ ] **`$1` substitution in runtime commands** — allow variables like `g++ -o $1.out $1.cpp && ./$1.out` so compiled languages work cleanly.
+- [ ] **Memory model rewrite** — replace the `ptr ptr string` manual memory scheme with reallocated real strings. Currently, if the file content outgrows its allocated buffer, we must reallocate, copy, and free. This is the right fix but architectural.
+- [ ] **Position cache for unchanged files** — cache the locations of codeblock starts so that if a file hasn't been edited since the last parse, mdnb can use cached positions to write outputs without re-scanning. If the file has been modified, fall back to full PEG parsing.
+
+### Planned features
+
+These features have been agreed as the next work. They are grouped by priority.
+
+**Tier 1 — core workflow**
+- [ ] Allow mutually exclusive `source:` vs `append:` codeblock commands. A cell with `source:filename` (as today) defines the single source file for its content. A cell with `append:filename` instead appends its content to the named source file, so several cells spread through the prose can all contribute to one source file. A cell must use exactly one of `source:` / `append:` (not both, not neither if the cell is runnable). This is the supported way to build up a program across multiple prose-separated blocks without persistent kernel state.
+
+**Tier 2 — reliability**
+- [ ] Only act on saves that are at least 1 second apart. If a save arrives less than 1s after the last processed save for that file, ignore it (debounce). Polling every 500ms stays; we will keep using mtime polling rather than native inotify/FSEvents watchers because they are system-limited and mdnb is cross-platform.
+- [ ] Build a cell call-dependency graph. A cell should be considered dirty (and rerun) when a cell whose output it consumes changes, not only when its own source or output file is missing. Changing cell A should invalidate cells that depend on A's output.
+- [ ] Implement asynchronous multithreaded execution so that a long-running cell does not block the watcher from parsing further saves. Introduce a new `[ ]` state field after the lang_name/id in the info string: states are `s`=stopped / `r`=running, and user can set `x`=execute / `k`=kill to control state.
+- [ ] Add a `timeout:N` codeblock command to set a per-cell timeout in N seconds. If a cell exceeds its timeout it should be killed. If `timeout:` is unspecified, default to 5 seconds.
+
+**Tier 3 — usability**
+- [ ] Surface execution status in the output, e.g. for each run: which cell, the system command, the exit code, and how long it took. Add this as debug/verbose output alongside the existing run.
+- [ ] Add a `trim:head:N` and `trim:tail:N` codeblock command to truncate output to the first or last N lines before it is written back. Default to `trim:head:50` so large outputs do not burden the source file or the mdnb server. This default applies when no `trim:` is given.
+- [ ] Add an `unsafe` codeblock command. By default, refuse to run a cell whose command or content matches a destructive pattern (e.g. `rm -rf`, `mkfs`, force-format) and report it in the file. A cell marked `unsafe` opts in and will run regardless.
+- [ ] Report errors on non-zero exit codes. When a system command does not exit cleanly, show the error in the resulting file so it will be displayed if the user created a `show:file` block for that output.
+
+### Decisions recorded (not to do)
+- Do **not** inline rich output by default. By default we should not show output; output only appears where the user explicitly requests it via `show:` / `output:`.
+- Do **not** add native file watchers (inotify/FSEvents). Polling is fine and keeps mdnb cross-platform.
+- Keep the current `:clean` behavior (documented above). No per-cell clear for now.
+- Keep running cells in the current working directory; cells are responsible for their own environment variables if needed.
+- No output-stripping/export pipeline, no multi-file project config, no shared cross-file runtimes for now.
 
 ## Bugs
 
