@@ -301,6 +301,11 @@ proc process(md: var MarkdownFile) =
   md.write
 
 ## ==============
+## Two saves closer together than this (measured by their mtimes) are treated as
+## one: the later one is ignored. Keeps a burst of mid-edit saves from each
+## triggering a full cell run. Polling stays at 500ms; this is a save spacing
+## guard, not a poll-rate change.
+const debounceInterval = initDuration(seconds = 1)
 
 proc getLastModTime(filename: string): Time =
   var error = true
@@ -323,18 +328,28 @@ proc main =
     quit()
 
   var modTimes = newSeq[Time](params.len)
+  var processedTimes = newSeq[Time](params.len)
   for idx, filename in params:
     modTimes[idx] = if looping: getLastModTime(filename)
                     else: getLastModTime(filename) - 1.minutes
+    processedTimes[idx] = modTimes[idx]
 
   echo "started"
   while true:
     for idx, filename in params:
-      if modTimes[idx] < getLastModTime(filename):
+      let curTime = getLastModTime(filename)
+      if modTimes[idx] < curTime:
+        modTimes[idx] = curTime
+        # Debounce: a save closer than `debounceInterval` to the last one we
+        # actually processed for this file is ignored (the run-once `-o` path is
+        # exempt). The gap is measured by mtime, matching the "at least 1 second
+        # apart" rule, so it is independent of how we happen to poll.
+        if looping and curTime - processedTimes[idx] < debounceInterval:
+          continue
         var md = newMarkdownFile(filename)
         if not looping: md.cleanBuild = true
         md.process
-        modTimes[idx] = getLastModTime(filename)
+        processedTimes[idx] = curTime
     if looping: sleep(500)
     else: break
 
