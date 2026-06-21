@@ -42,6 +42,8 @@ type Running = object
   outputFile: string         ## the cell's output: path — where captured stdout goes
   started: Time              ## when the cell was launched — for the per-cell timeout
   timeoutSecs: int           ## resolved per-cell timeout in seconds (default 5)
+  trimTail: bool             ## resolved `trim:tail,N` vs `trim:head,N` (default head)
+  trimLines: int             ## resolved per-cell trim line count (default 50)
   cellId: int                ## 1-based cell ordinal at launch — for verbose status
   command: string            ## resolved shell command that ran — for verbose status
 
@@ -132,16 +134,38 @@ proc startRun(md: var MarkdownFile; idx: int) =
   running.add Running(p: p, filename: md.filename, language: language,
                       sourceFile: sourceFile, outputFile: outputFile,
                       started: getTime(), timeoutSecs: secs,
+                      trimTail: cell.properties.trimTail,
+                      trimLines: cell.properties.trimLines,
                       cellId: cell.id, command: command)
   if verbose:
     echo &"[mdnb] {md.filename} cell {cell.id}: launched '{command}' (timeout {secs}s)"
   if cell.properties.state == 'x':
     md.writeCellState(idx, 'r')         # x -> r so the user sees it flipped
 
+proc applyTrim(output: string; tail: bool; n: int): string =
+  ## Truncate captured output to the first (`tail == false`) or last
+  ## (`tail == true`) `n` lines before it is written back, so large outputs don't
+  ## bloat the file. A no-op when the output already fits. When lines are actually
+  ## dropped, a footer naming the trim mode, the limit, and how many lines were
+  ## cut is appended — consistent with how `timeout:` reports kills. Default
+  ## `trim:head,50` (resolved in `processBodyForCells`) bounds every cell.
+  if output.len == 0: return output
+  let lines = output.split('\n')
+  if lines.len <= n: return output
+  let dropped = lines.len - n
+  let mode = if tail: "tail" else: "head"
+  let kept = if tail: lines[lines.len - n .. ^1] else: lines[0 ..< n]
+  kept.join("\n") & &"\n... (trim:{mode},{n} — {dropped} lines truncated)"
+
 proc reapFinished(md: var MarkdownFile; r: Running) =
   ## Read the finished process's stdout, write it to its `output:` file and
   ## into any `show:` cell of the current md, then flip the cell `r` -> `s`.
   var output = r.p.outputStream.readAll.strip
+  # Apply output truncation (Tier 3) before any write so both the `output:` file
+  # and the matching `show:` cell get the same trimmed content. Notices mdnb
+  # authors itself (the timeout-kill notice, `(please wait)`, `(empty output)`)
+  # bypass this — only captured subprocess output is trimmed.
+  output = applyTrim(output, r.trimTail, r.trimLines)
   let exitCode = r.p.peekExitCode
   r.p.close
   r.outputFile.safeWriteFile(output)

@@ -101,10 +101,32 @@ proc processBodyForCells(md: var MarkdownFile) =
           except ValueError:
             echo &"Skipping cell: 'timeout:N' expects an integer, got '{command[1]}'"
             invalid = true
+      of "trim":
+        # `trim:head,N` / `trim:tail,N` — mode and line count are comma-separated
+        # (no spaces), so this parses under the existing `word ':' word` grammar
+        # just like `inputs:a,b,c`. The argument splits on ',' into [mode, count].
+        if command.len != 2:
+          echo "Skipping cell: argument required: 'trim:head,N' / 'trim:tail,N'"
+          invalid = true
+        else:
+          let parts = command[1].split(',')
+          if parts.len != 2 or parts[0] notin ["head", "tail"]:
+            echo &"Skipping cell: 'trim' wants head,N or tail,N, got '{command[1]}'"
+            invalid = true
+          else:
+            try:
+              let n = parseInt(parts[1])
+              if n <= 0: raise newException(ValueError, "non-positive")
+              props.trimTail = parts[0] == "tail"
+              props.trimLines = n
+            except ValueError:
+              echo &"Skipping cell: 'trim' count expects a positive integer, got '{parts[1]}'"
+              invalid = true
       else: discard
-    # `timeout:N` is optional; resolve the default for every cell up front so
-    # the execution layer can read it unconditionally.
+    # `timeout:N` and `trim:` are optional; resolve their defaults for every cell
+    # up front so the execution layer can read them unconditionally.
     if props.timeout == 0: props.timeout = defaultTimeout
+    if props.trimLines == 0: props.trimLines = defaultTrimLines
     if props.code and props.language.len == 0: invalid = true
     if invalid: continue
     if props.code and props.source.len == 0:

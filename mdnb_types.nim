@@ -8,7 +8,8 @@
 ## `output`, etc.). `timeout` defaults to `defaultTimeout` seconds and is read
 ## directly. This keeps the data model free of the unwrap/`some` ceremony that
 ## `Option[T]` would force on every call site.
-const defaultTimeout = 5   ## seconds; the `timeout:` a cell gets when it has none
+const defaultTimeout = 5      ## seconds; the `timeout:` a cell gets when it has none
+const defaultTrimLines = 50   ## the `trim:head,N` line count a cell gets when it has none
 
 type CellProperties = object
   dirty: bool
@@ -17,6 +18,8 @@ type CellProperties = object
   inputs: seq[string]
   language, output, source, show: string   ## "" = absent (no such command given)
   timeout: int   ## `timeout:N` in seconds; defaults to `defaultTimeout`.
+  trimTail: bool   ## `trim:tail,N` (true) vs `trim:head,N` (false, the default).
+  trimLines: int   ## `trim:head,N` / `trim:tail,N` line count; defaults to `defaultTrimLines`.
   state: char   ## `[ ]` field after the lang/id in the info string (see §7/§12).
                ## '\0' = absent: dirty-driven auto-run (today's behavior).
                ## 's' = stopped (won't auto-run), 'r' = running (mdnb-set),
