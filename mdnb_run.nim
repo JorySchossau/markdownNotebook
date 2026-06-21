@@ -12,6 +12,18 @@
 ## each in-flight cell on every cycle and kills any that have exceeded their
 ## limit, writing a notice into the output file (and any matching `show:` cell)
 ## so the user sees what happened and why.
+##
+## Pipe draining (Tier 2): a cell's stdout reaches mdnb through an OS pipe whose
+## buffer is tiny (~64KB). If we only read it after the process exits (the old
+## behavior), any cell whose output exceeds the buffer fills it and the producer
+## then *blocks* writing to a full pipe — it can never exit, so the read never
+## happens, so the cell hangs until its `timeout:` kills it. `pollRuns` now
+## drains each running cell's pipe on *every* cycle (`drainOutput`) into a
+## per-cell accumulator, so the producer is never blocked. `readData` returns 0
+## the instant the pipe is momentarily empty (it does not block on a live pipe),
+## so the drain is a cheap non-blocking spin that fits the existing poll cadence;
+## the accumulated output is trimmed/written on the cycle the process exits.
+
 
 proc buildCommand(command, sourceFilename: string): string =
   ## Build the shell command for a cell. If `command` contains `$1`, every
@@ -44,6 +56,9 @@ type Running = object
   timeoutSecs: int           ## resolved per-cell timeout in seconds (default 5)
   cellId: int                ## 1-based cell ordinal at launch — for verbose status
   command: string            ## resolved shell command that ran — for verbose status
+  acc: string                ## drained-so-far stdout; pipe buffer is ~64KB, so a cell
+                             ## whose output exceeds it would block forever writing to a
+                             ## full pipe if we only read on exit (see drainOutput).
 
 var running: seq[Running]    ## currently-executing cell subprocesses (module-global)
 var verbose: bool            ## set by `-v`/`--verbose`; gates per-run status logging
@@ -148,6 +163,34 @@ proc startRun(md: var MarkdownFile; idx: int) =
   if cell.properties.state == 'x':
     md.writeCellState(idx, 'r')         # x -> r so the user sees it flipped
 
+const drainChunk = 8192   ## per-call read granularity; the loop stops at an empty pipe
+
+proc drainOutput(r: var Running) =
+  ## Pull whatever stdout is currently waiting on a running cell's pipe into its
+  ## accumulator. The OS pipe buffer is tiny (~64KB); if we only read on exit, a
+  ## cell whose output exceeds it fills the buffer and then the producer *blocks*
+  ## writing to a full pipe — it never exits, the read never happens, and the
+  ## cell hangs until its `timeout:` kills it (the pre-existing large-output
+  ## bug). Draining every cycle keeps the pipe clear so the producer never blocks.
+  ##
+  ## `outputStream.readData` returns the number of bytes available *right now*,
+  ## and returns 0 the instant the pipe is empty (it does not block on a live
+  ## pipe), so this is a cheap non-blocking spin: read until a read yields 0,
+  ## then return and let the process keep running. Memory is bounded downstream
+  ## by `readTrimmed` when the accumulated bytes are shown.
+  let s = r.p.outputStream
+  var buf: array[drainChunk, char]
+  while true:
+    let n = s.readData(addr buf[0], drainChunk)
+    if n == 0: break                     # pipe momentarily empty; cell may still run
+    # Append the chunk to the accumulator. string.add has no openArray[char]
+    # overload, so grow explicitly and copy (the same shape Nim's readAll uses).
+    let prev = r.acc.len
+    r.acc.setLen(prev + n)
+    copyMem(addr r.acc[prev], addr buf[0], n)
+  # NB: do NOT call readAll here — it loops until EOF, so it would block on a
+  # still-running cell, defeating the whole point. Per-cycle drain only.
+
 proc readTrimmed(s: Stream; tail: bool; n: int): string =
   ## Stream a source (a process pipe or a file) through a trim window so an
   ## enormous input is never read fully into memory before the lines to keep are
@@ -197,7 +240,7 @@ proc readTrimmed(s: Stream; tail: bool; n: int): string =
       core & &"\n... (trim:tail,{n} — {total - n} lines truncated)"
     else: core
 
-proc reapFinished(md: var MarkdownFile; r: Running) =
+proc reapFinished(md: var MarkdownFile; r: var Running) =
   ## Read the finished process's stdout, write it in full to its `output:` file,
   ## write a trimmed view into any matching `show:` cell of the current md, then
   ## flip the cell `r` -> `s`. The on-disk `output:` file is intentionally
@@ -206,9 +249,14 @@ proc reapFinished(md: var MarkdownFile; r: Running) =
   # source of truth on disk is never truncated. Notices mdnb authors itself
   # (the timeout-kill notice, `(please wait)`, `(empty output)`) are written
   # verbatim — only captured subprocess output is trimmed for display.
-  let raw = r.p.outputStream.readAll.strip
+  # The bulk of the output was drained incrementally by `pollRuns`/`drainOutput`
+  # while the cell ran (to keep the OS pipe from filling and blocking the
+  # producer); drain the final tail bytes the process wrote between the last poll
+  # and exiting, then read from the accumulator rather than the pipe.
+  r.drainOutput
   let exitCode = r.p.peekExitCode
   r.p.close
+  let raw = r.acc.strip
   r.outputFile.safeWriteFile(raw)
   let showIdx = md.showCellForOutput(r.outputFile)
   if showIdx >= 0:
@@ -274,22 +322,27 @@ proc pollRuns(md: var MarkdownFile) =
           md.writeCellState(i, 's')
           break
   # Then reap whatever has finished on its own, or kill any past its timeout
-  # (this file's processes only).
+  # (this file's processes only). Drain each of this file's running cells first:
+  # the OS pipe buffer is ~64KB, so without a per-cycle drain a cell whose output
+  # exceeds it blocks the producer on a full pipe and can never exit — the
+  # timeout below would then kill it before any output landed (see drainOutput).
   let now = getTime()
   var i = 0
   while i < running.len:
     if running[i].filename != md.filename:
       inc i                              # belongs to another watched file
-    elif now - running[i].started >= initDuration(seconds = running[i].timeoutSecs):
-      # Per-cell timeout (Tier 2): exceeded its `timeout:N` (default 5s). Kill,
-      # drop from `running`, and write a notice so the user can see what/why.
-      md.reapTimeout(running[i])
-      running.delete i
-    elif running[i].p.peekExitCode == -1:
-      inc i   # still running; leave it for a future cycle
     else:
-      md.reapFinished(running[i])
-      running.delete i
+      running[i].drainOutput             # keep the pipe clear; acc accumulates stdout
+      if now - running[i].started >= initDuration(seconds = running[i].timeoutSecs):
+        # Per-cell timeout (Tier 2): exceeded its `timeout:N` (default 5s). Kill,
+        # drop from `running`, and write a notice so the user can see what/why.
+        md.reapTimeout(running[i])
+        running.delete i
+      elif running[i].p.peekExitCode == -1:
+        inc i   # still running; leave it for a future cycle
+      else:
+        md.reapFinished(running[i])
+        running.delete i
 
 ## ==============
 
