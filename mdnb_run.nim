@@ -63,10 +63,6 @@ type Running = object
 
 var running: seq[Running]    ## currently-executing cell subprocesses (module-global)
 var verbose: bool            ## set by `-v`/`--verbose`; gates per-run status logging
-var forceRunAll: bool        ## set by `-o`: force every code cell to run this pass
-                             ## regardless of its `[s/r/x/k]` state, preserving the
-                             ## clean-build contract of run-once mode under the Tier 4
-                             ## stopped-by-default model (see `cellShouldRun`).
 
 proc logRunStatus(r: Running; exitCode: int; note = "") =
   ## Verbose execution status (Tier 3): one line per completed cell run to stdout
@@ -133,12 +129,12 @@ proc cellShouldRun(cell: Cell): bool =
   ## user must ask for it. `markDirtyCells` still computes dirtiness and the call
   ## graph (`inputs:`/`output:`) still propagates it; a dirty cell simply *waits*
   ## in `[s]` until the user runs it (`[x]`), one of the bulk `:runall` /
-  ## `:runabove` / `:runbelow` commands, or the `-o` run-once path.
+  ## `:runabove` / `:runbelow` commands, or the `-o` run-once path. (`-o` does
+  ## NOT go through `cellShouldRun`: it sets `runMode = rmAll`, so `runBulk` runs
+  ## every cell sequentially via `runCellsSequential`, which forces `[x]` itself.)
   ## - `x` = execute: force-run regardless of dirty (the user's run trigger).
   ## - `s`/`r`/`k` = stopped / running / kill-requested: don't (re)launch.
-  ## - `forceRunAll` (set by `-o`) overrides everything: every code cell runs.
   if not cell.properties.code: return false
-  if forceRunAll: return true
   case cell.properties.state
   of 'x': return true                    # execute: force-run regardless of dirty
   of 's', 'r', 'k': return false         # stopped / running / kill-requested
@@ -191,17 +187,13 @@ proc startRun(md: var MarkdownFile; idx: int) =
 const drainChunk = 8192   ## per-call read granularity; the loop stops at an empty pipe
 
 proc drainOutput(r: var Running) =
-  ## Pull whatever stdout is currently waiting on a running cell's pipe into its
-  ## accumulator. The OS pipe buffer is tiny (~64KB); if we only read on exit, a
-  ## cell whose output exceeds it fills the buffer and then the producer *blocks*
-  ## writing to a full pipe — it never exits, the read never happens, and the
-  ## cell hangs until its `timeout:` kills it (the pre-existing large-output
-  ## bug). Draining every cycle keeps the pipe clear so the producer never blocks.
-  ##
-  ## `outputStream.readData` returns the number of bytes available *right now*,
-  ## and returns 0 the instant the pipe is empty (it does not block on a live
-  ## pipe), so this is a cheap non-blocking spin: read until a read yields 0,
-  ## then return and let the process keep running. Memory is bounded downstream
+  ## Pull the cell's captured stdout out of its (now-finished) process's pipe
+  ## into the accumulator. The OS pipe buffer is tiny (~64KB); the bulk of a
+  ## large output is read here once the process has exited (pipe at EOF). Only
+  ## call this on a process that has ALREADY finished (`peekExitCode != -1`) or
+  ## been killed — see `pollRuns` for why draining a still-running cell would
+  ## block the watcher. At EOF `readData` returns 0 and never blocks, so this
+  ## reads everything the process wrote in one pass. Memory is bounded downstream
   ## by `readTrimmed` when the accumulated bytes are shown.
   let s = r.p.outputStream
   var buf: array[drainChunk, char]
@@ -401,16 +393,28 @@ proc pollRuns(md: var MarkdownFile) =
     if running[i].filename != md.filename:
       inc i                              # belongs to another watched file
     else:
-      running[i].drainOutput             # keep the pipe clear; acc accumulates stdout
+      # Decide the cell's fate BEFORE draining. `outputStream.readData` blocks on
+      # an empty-but-live pipe (it returns 0 only at EOF, i.e. once the process
+      # has exited), so draining a still-running cell that is momentarily silent
+      # (e.g. `sleep 30`) would hang the whole watcher — and then a user-typed
+      # `[k]` could never be honored. The stdlib has no portable non-blocking
+      # pipe read (`Process.hasData` reports an open write-end as readable even
+      # with zero bytes), so we gate the drain on `peekExitCode`: only drain when
+      # the process is finished (pipe at EOF → readData returns 0, no block) or
+      # when it is being killed for timeout. A still-running cell is left alone
+      # this cycle. Trade-off: a running cell whose output exceeds the ~64KB pipe
+      # buffer blocks its own producer and is then killed by its `timeout:` — so
+      # very-heavy-output cells need a generous `timeout:` AND must fit in the
+      # buffer, or be split up. This keeps the watcher responsive (the priority).
       if now - running[i].started >= initDuration(seconds = running[i].timeoutSecs):
         # Per-cell timeout (Tier 2): exceeded its `timeout:N` (default 5s). Kill,
         # drop from `running`, and write a notice so the user can see what/why.
         md.reapTimeout(running[i])
         running.delete i
       elif running[i].p.peekExitCode == -1:
-        inc i   # still running; leave it for a future cycle
+        inc i   # still running; leave it for a future cycle (do NOT drain)
       else:
-        md.reapFinished(running[i])
+        md.reapFinished(running[i])   # finished: drains at EOF inside reapFinished
         running.delete i
 
 ## ==============
@@ -486,7 +490,6 @@ proc reapThis(md: var MarkdownFile; sourceFile: string; timeoutSecs: int; starte
     for j, r in running:
       if r.filename == md.filename and r.sourceFile == sourceFile: idx = j; break
     if idx == -1: return   # no longer in `running` -> already reaped elsewhere
-    running[idx].drainOutput
     # Honor a user-typed `[k]` on this cell between spins (parse current file).
     let killRequested = block:
       var kr = false

@@ -70,11 +70,16 @@ proc main =
         var md = newMarkdownFile(filename)
         if not looping:
           md.cleanBuild = true
-          forceRunAll = true   # Tier 4: `-o` is a clean build, so force every cell to
-                               # run regardless of `[s]` state, preserving run-once's
-                               # "produce full output" contract under stopped-by-default.
+          # Tier 4: `-o` is a clean build, so force every cell to run regardless
+          # of `[s]` state, preserving run-once's full-output contract under
+          # stopped-by-default. Route it through the SEQUENTIAL bulk path
+          # (`runMode = rmAll`) rather than `forceRunAll`+non-blocking `runCells`,
+          # so producer cells finish before their consumers start — `-o` must
+          # behave like `:runall` (the spec), not a concurrent fan-out, or an
+          # `inputs:`/`output:` chain breaks (consumer reads a file the producer
+          # hasn't written yet).
+          md.runMode = rmAll
         md.process
-        if not looping: forceRunAll = false   # only the `-o` process() pass forces
         processedTimes[idx] = curTime
         # Record the mtime of the file as mdnb left it, so the change mdnb just
         # caused (writing output/state back) is recognized as self-feedback and
@@ -87,14 +92,31 @@ proc main =
         # this file never blocks another watched file's saves from being
         # processed. Parsing is required so `reapFinished` can locate the show
         # cell to write the output into.
-        var md = newMarkdownFile(filename)
-        md.processYamlHeader
-        md.processBodyForCells
-        md.pollRuns
-        # A reap may have written output/state back; record that mtime as our own
-        # so the next poll skips it instead of treating mdnb's write as a save.
-        selfWriteTimes[idx] = getLastModTime(filename)
-        modTimes[idx] = selfWriteTimes[idx]
+        #
+        # But: if the user saved WHILE a cell was running (e.g. typed `[k]` to
+        # kill it, or edited another cell), that save must go through the FULL
+        # `process` pipeline (shortcut expansion, dirty-marking, run launching),
+        # not just the reap-only path — otherwise the `[k]` would never be honored
+        # because this branch's mtime bookkeeping would absorb it. So detect a
+        # user save here (mtime advanced past what we last recorded and isn't our
+        # own write) and run the whole pipeline; otherwise just reap.
+        let curRun = getLastModTime(filename)
+        if curRun != modTimes[idx] and curRun != selfWriteTimes[idx]:
+          # A real user save arrived mid-run: process it fully (this also reaps).
+          var md = newMarkdownFile(filename)
+          md.process
+          processedTimes[idx] = curRun
+          selfWriteTimes[idx] = getLastModTime(filename)
+          modTimes[idx] = selfWriteTimes[idx]
+        else:
+          var md = newMarkdownFile(filename)
+          md.processYamlHeader
+          md.processBodyForCells
+          md.pollRuns
+          # A reap may have written output/state back; record that mtime as our own
+          # so the next poll skips it instead of treating mdnb's write as a save.
+          selfWriteTimes[idx] = getLastModTime(filename)
+          modTimes[idx] = selfWriteTimes[idx]
     if looping:
       sleep(500)
     else:
