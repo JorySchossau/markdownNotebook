@@ -50,6 +50,16 @@ type MarkdownFile = object
                                              ## dirtiness check — body is the other half
   cellsWritingToSource: Table[string, int]
   cleanBuild: bool
+  # Tier 4 bulk-run commands: `:runall` / `:runabove` / `:runbelow` on their own
+  # line. `replaceShortcuts` removes the line and sets exactly one of these. The
+  # run step (after markDirtyCells) reads them, runs the selected cells in
+  # document order, and clears them. `runAll` is a plain flag (all cells);
+  # `runAboveAt`/`runBelowAt` carry the byte offset of the command line BEFORE
+  # removal, so "above"/"below" maps to a cell boundary (cells whose body starts
+  # before / at-or-after that offset). -1 = no such command this pass.
+  runAll: bool
+  runAboveAt: int
+  runBelowAt: int
 
 ## ==============
 

@@ -55,3 +55,11 @@ let
     """
   bareShowPattern = peg"""\n (!\n \s)* "show:" {(\w / '.' / '-' / ':' / '/' / '\\')*} (!\n \s)* \n"""
   cleanPattern = peg"""\n ":clean" (!\n \s)* \n"""
+  # Tier 4 global run commands: each is a single token on its own line, modeled
+  # on `cleanPattern`. They select a scope of cells to run in document order (all
+  # / above the command / below it). `replaceShortcuts` removes the line, records
+  # the command's original byte offset (so `:runabove`/`:runbelow` can map to a
+  # cell boundary), and sets a flag on the MarkdownFile for the bulk-run step.
+  runAllPattern = peg"""\n ":runall" (!\n \s)* \n"""
+  runAbovePattern = peg"""\n ":runabove" (!\n \s)* \n"""
+  runBelowPattern = peg"""\n ":runbelow" (!\n \s)* \n"""

@@ -7,6 +7,7 @@
 ## file's contents are read in later by `runCells`, streamed through the cell's
 ## trim window so an enormous file is never pulled fully into the buffer here.
 import std/random
+type ShortcutKind = enum skShow, skClean, skRunAll, skRunAbove, skRunBelow
 proc replaceShortcuts(md: var MarkdownFile) =
   var pos: tuple[first, last: int]
   var endPrevChunk, startNextChunk = 0
@@ -15,10 +16,18 @@ proc replaceShortcuts(md: var MarkdownFile) =
   #let (showimg, clean) = ("![$1]($1)\n", "")
   randomize()
   let (showimg, clean) = ("<img src=\"$1\" width=100% alt=\"" & $rand(1000) & "\">\n", "")
+  # Tier 4 global run commands collapse to the empty string (line removed), like
+  # `:clean`, but each sets a MarkdownFile flag the bulk-run step reads. The
+  # `:runabove`/`:runbelow` offset is captured from `fragpos` at removal time so
+  # "above"/"below" maps to a cell boundary. PEG objects have no usable `==`, so
+  # carry a `ShortcutKind` tag alongside each pattern and dispatch on the tag.
+  let rules = [(skShow, bareShowPattern, showimg), (skClean, cleanPattern, clean),
+               (skRunAll, runAllPattern, clean), (skRunAbove, runAbovePattern, clean),
+               (skRunBelow, runBelowPattern, clean)]
   for cell_i in 0 .. md.cells.len:
     startNextChunk = if cell_i == md.cells.len: md.buf[].len - 1
                      else: md.cells[cell_i].rng.a
-    for pattern, replacement in [(bareShowPattern, showimg), (cleanPattern, clean)].items:
+    for (kind, pattern, replacement) in rules.items:
       pos = (-1, 0)
       while true:
         matches[0] = ""
@@ -26,8 +35,7 @@ proc replaceShortcuts(md: var MarkdownFile) =
         if pos.first == -1: break
         let fragpos = (endPrevChunk + pos.first + 1, endPrevChunk + pos.last)
         let newvalue =
-          if replacement == clean or
-             (replacement == showimg and splitFile(matches[0]).ext in imageExt):
+          if kind != skShow or splitFile(matches[0]).ext in imageExt:
             replacement % matches
           else:
             # Non-image bare `show:file`: emit an empty `show:` block whose body
@@ -39,7 +47,12 @@ proc replaceShortcuts(md: var MarkdownFile) =
         if cell_i < md.cells.len:
           md.updatePositionsByOffset(md.cells[cell_i].id, deltaOffset)
         startNextChunk += deltaOffset
-        if replacement == clean: md.cleanBuild = true
+        case kind
+        of skClean: md.cleanBuild = true
+        of skRunAll: md.runAll = true
+        of skRunAbove: md.runAboveAt = fragpos[0]
+        of skRunBelow: md.runBelowAt = fragpos[0]
+        else: discard
     endPrevChunk = startNextChunk
 
 proc clearAllFiles(md: MarkdownFile) =
