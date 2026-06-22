@@ -6,11 +6,15 @@
 ## A bare `show:file` (non-image) is expanded to an *empty* `show:` block; the
 ## file's contents are read in later by `runCells`, streamed through the cell's
 ## trim window so an enormous file is never pulled fully into the buffer here.
+import std/random
 proc replaceShortcuts(md: var MarkdownFile) =
   var pos: tuple[first, last: int]
   var endPrevChunk, startNextChunk = 0
   var matches = newSeq[string](1)
-  let (showimg, clean) = ("![$1]($1)\n", "")
+  # use the html version for now as we explore how to force a cache update of the md viewer
+  #let (showimg, clean) = ("![$1]($1)\n", "")
+  randomize()
+  let (showimg, clean) = ("<img src=\"$1\" width=100% alt=\"" & $rand(1000) & "\">\n", "")
   for cell_i in 0 .. md.cells.len:
     startNextChunk = if cell_i == md.cells.len: md.buf[].len - 1
                      else: md.cells[cell_i].rng.a
