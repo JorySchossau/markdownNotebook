@@ -189,6 +189,38 @@ proc injectStoppedState(md: var MarkdownFile) =
 
 ## ==============
 
+proc runBulk(md: var MarkdownFile): bool =
+  ## Tier 4 bulk-run dispatch: if one of `:runall`/`:runabove`/`:runbelow` was
+  ## seen this pass (runMode set by `replaceShortcuts`), select the target cells
+  ## in document order and run them sequentially (visible x -> r -> s per cell),
+  ## then clear the flag. Returns true if a bulk run happened (so `process` skips
+  ## the normal non-blocking `runCells` for this pass). `runBoundaryAt` is the
+  ## cell index of the first cell at/below the command line: `:runabove` selects
+  ## indices < boundary, `:runbelow` selects indices >= boundary.
+  result = false
+  case md.runMode
+  of rmAll:
+    var sel: seq[int] = @[]
+    for i, c in md.cells:
+      if c.properties.code: sel.add i
+    md.runCellsSequential(sel)
+    result = true
+  of rmAbove:
+    var sel: seq[int] = @[]
+    for i, c in md.cells:
+      if i < md.runBoundaryAt and c.properties.code: sel.add i
+    md.runCellsSequential(sel)
+    result = true
+  of rmBelow:
+    var sel: seq[int] = @[]
+    for i, c in md.cells:
+      if i >= md.runBoundaryAt and c.properties.code: sel.add i
+    md.runCellsSequential(sel)
+    result = true
+  of rmNone: discard
+  md.runMode = rmNone
+  md.runBoundaryAt = 0
+
 proc process(md: var MarkdownFile) =
   md.processYamlHeader
   md.processBodyForCells
@@ -201,5 +233,6 @@ proc process(md: var MarkdownFile) =
   md.collateSources
   md.markDirtyCells
   md.showWaitMessages
-  md.runCells
+  if not md.runBulk:      # Tier 4: a bulk command runs its scope sequentially this pass
+    md.runCells
   md.write

@@ -181,6 +181,11 @@ proc startRun(md: var MarkdownFile; idx: int) =
   if verbose:
     echo &"[mdnb] {md.filename} cell {cell.id}: launched '{command}' (timeout {secs}s)"
   if cell.properties.state == 'x':
+    md.cells[idx].properties.state = 'r'  # keep in-memory state in sync with the
+                                          # file so a caller holding this `md`
+                                          # across multiple runs (the Tier 4
+                                          # sequential bulk-run path) sees `r`
+                                          # and `reapFinished` can flip it to `s`.
     md.writeCellState(idx, 'r')         # x -> r so the user sees it flipped
 
 const drainChunk = 8192   ## per-call read granularity; the loop stops at an empty pipe
@@ -296,6 +301,7 @@ proc reapFinished(md: var MarkdownFile; r: var Running) =
     r.logRunStatus(exitCode)
     for i, c in md.cells:
       if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
+        md.cells[i].properties.state = 's'   # keep in-memory state synced with disk
         md.writeCellState(i, 's')
         break
     return
@@ -324,6 +330,7 @@ proc reapFinished(md: var MarkdownFile; r: var Running) =
   # Flip the producing cell's state r -> s so the user sees it settled.
   for i, c in md.cells:
     if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
+      md.cells[i].properties.state = 's'   # keep in-memory state synced with disk
       md.writeCellState(i, 's')
       break
 
@@ -341,6 +348,7 @@ proc reapTimeout(md: var MarkdownFile; r: Running) =
     r.logRunStatus(exitCode, note = &"killed (timeout:{r.timeoutSecs}s)")
     for i, c in md.cells:
       if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
+        md.cells[i].properties.state = 's'   # keep in-memory state synced with disk
         md.writeCellState(i, 's')
         break
     return
@@ -354,6 +362,7 @@ proc reapTimeout(md: var MarkdownFile; r: Running) =
   r.logRunStatus(exitCode, note = &"killed (timeout:{r.timeoutSecs}s)")
   for i, c in md.cells:
     if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
+      md.cells[i].properties.state = 's'   # keep in-memory state synced with disk
       md.writeCellState(i, 's')
       break
 
@@ -462,3 +471,94 @@ proc runCells(md: var MarkdownFile) =
           fs.close
           md.writeIntoCell(i, shown)
           md.write
+
+proc reapThis(md: var MarkdownFile; sourceFile: string; timeoutSecs: int; started: Time) =
+  ## Block until the running cell identified by `sourceFile` is reaped, honoring
+  ## its `timeout:` and `[k]`. Used by `runCellsSequential` to run one cell to
+  ## completion before starting the next, so the bulk-run commands produce a
+  ## visible per-cell x -> r -> s progression in the file. Mirrors the watch
+  ## loop's reap path: drain the pipe each spin (large output must not block the
+  # producer on a full ~64KB pipe), kill on timeout, and call `reapFinished`
+  ## (which writes output + the show cell + flips state to `s` + writes the file).
+  let deadline = started + initDuration(seconds = timeoutSecs)
+  while true:
+    var idx = -1
+    for j, r in running:
+      if r.filename == md.filename and r.sourceFile == sourceFile: idx = j; break
+    if idx == -1: return   # no longer in `running` -> already reaped elsewhere
+    running[idx].drainOutput
+    # Honor a user-typed `[k]` on this cell between spins (parse current file).
+    let killRequested = block:
+      var kr = false
+      for c in md.cells:
+        if c.properties.code and c.properties.source == sourceFile and c.properties.state == 'k':
+          kr = true; break
+      kr
+    if killRequested:
+      osproc.kill(running[idx].p)
+      let ec = running[idx].p.peekExitCode
+      running[idx].p.close
+      running[idx].logRunStatus(ec, note = "killed ([k])")
+      running.delete idx
+      # flip k -> s in the file
+      for i, c in md.cells:
+        if c.properties.code and c.properties.source == sourceFile:
+          md.cells[i].properties.state = 's'
+          md.writeCellState(i, 's')
+          break
+      return
+    if getTime() >= deadline:
+      md.reapTimeout(running[idx])
+      running.delete idx
+      return
+    if running[idx].p.peekExitCode != -1:
+      md.reapFinished(running[idx])
+      running.delete idx
+      return
+    sleep(50)
+
+proc runCellsSequential(md: var MarkdownFile; selectedIdx: seq[int]) =
+  ## Tier 4 bulk-run core: run `selectedIdx` cells one at a time in document
+  ## order, fully completing each (x -> r -> s, output written, show cell filled)
+  ## before the next starts — so `:runall`/`:runabove`/`:runbelow` give a visible
+  ## per-cell progression, as required. Each cell is forced by flipping its state
+  ## to `x` (the run trigger) in memory and on disk, then launched via the normal
+  ## `startRun` and synchronously reaped via `reapThis`. This deliberately BLOCKS
+  ## the watcher for the duration (documented behavior): ordering and per-cell
+  ## file updates are the point of the bulk commands, and neither is possible
+  ## with the non-blocking launch path. Dependencies (`inputs:`/`output:`) still
+  ## apply transitively: `markDirtyCells` already ran, and a cell whose inputs
+  ## changed simply re-runs because it is in `selectedIdx`.
+  createDir "temp"
+  md.sweepEphemeralCache
+  md.pollRuns
+  for idx in selectedIdx:
+    # Skip a cell that is already running (e.g. launched on a prior pass) — its
+    # output lands on a later cycle; forcing a second launch would collide on the
+    # same source file. Also skip raw/non-running cells handled below.
+    if idx < 0 or idx >= md.cells.len: continue
+    if not md.cells[idx].properties.code: continue
+    # Read the producer's resolved timeout (default 5) for the blocking reap.
+    let secs = md.cells[idx].properties.timeout
+    # Force the run trigger: set state x in memory and splice into the file so
+    # the user sees x, then startRun flips it to r and launches the subprocess.
+    md.cells[idx].properties.state = 'x'
+    md.writeCellState(idx, 'x')
+    md.startRun(idx)
+    md.write   # x -> r visible before we block on the reap
+    md.reapThis(md.cells[idx].properties.source, secs,
+                if running.len > 0: running[^1].started else: getTime())
+  # After the sequential run, refresh any show cells whose files now exist but
+  # weren't the target of a just-run producer (e.g. a show cell below all run
+  # cells, displaying a pre-existing file). Cheap and keeps the view consistent.
+  for i, cell in md.cells:
+    if not cell.properties.code and cell.properties.show.len > 0:
+      let target = cell.properties.show
+      if fileExists(target):
+        let fs = newFileStream(target, fmRead)
+        if fs != nil:
+          let shown = readTrimmed(fs, cell.properties.trimTail,
+                                  cell.properties.trimLines)
+          fs.close
+          md.writeIntoCell(i, shown)
+  md.write

@@ -11,6 +11,9 @@
 const defaultTimeout = 5      ## seconds; the `timeout:` a cell gets when it has none
 const defaultTrimLines = 50   ## the `trim:head,N` line count a cell gets when it has none
 
+type RunMode = enum   ## Tier 4 bulk-run scope set by `:runall`/`:runabove`/`:runbelow`
+  rmNone, rmAll, rmAbove, rmBelow
+
 type CellProperties = object
   dirty: bool
   code: bool
@@ -54,12 +57,13 @@ type MarkdownFile = object
   # line. `replaceShortcuts` removes the line and sets exactly one of these. The
   # run step (after markDirtyCells) reads them, runs the selected cells in
   # document order, and clears them. `runAll` is a plain flag (all cells);
-  # `runAboveAt`/`runBelowAt` carry the byte offset of the command line BEFORE
-  # removal, so "above"/"below" maps to a cell boundary (cells whose body starts
-  # before / at-or-after that offset). -1 = no such command this pass.
-  runAll: bool
-  runAboveAt: int
-  runBelowAt: int
+  # `runBoundaryAt` is the cell INDEX boundary the command fell in (the index of
+  # the first cell at or below the command line, captured before offsets shift),
+  # so `:runabove` selects cells with index < boundary and `:runbelow` selects
+  # cells with index >= boundary — robust to any offset changes after removal.
+  # `runMode` records which of above/below is intended. -1 / rmNone = not set.
+  runMode*: RunMode
+  runBoundaryAt*: int
 
 ## ==============
 
