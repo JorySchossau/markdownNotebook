@@ -68,8 +68,13 @@ proc main =
         if looping and curTime - processedTimes[idx] < debounceInterval:
           continue
         var md = newMarkdownFile(filename)
-        if not looping: md.cleanBuild = true
+        if not looping:
+          md.cleanBuild = true
+          forceRunAll = true   # Tier 4: `-o` is a clean build, so force every cell to
+                               # run regardless of `[s]` state, preserving run-once's
+                               # "produce full output" contract under stopped-by-default.
         md.process
+        if not looping: forceRunAll = false   # only the `-o` process() pass forces
         processedTimes[idx] = curTime
         # Record the mtime of the file as mdnb left it, so the change mdnb just
         # caused (writing output/state back) is recognized as self-feedback and

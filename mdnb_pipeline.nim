@@ -97,13 +97,95 @@ proc markDirtyCells(md: var MarkdownFile) =
           break
 
 proc showWaitMessages(md: var MarkdownFile) =
-  for codeCell in md.cells:
-    if not (codeCell.properties.code or codeCell.properties.dirty): continue
-    for i, showCell in md.cells:
+  ## Write "(please wait)" into the `show:` cell of every code cell that will
+  ## actually run this pass, so the user sees immediate feedback before async
+  ## output lands. Under the Tier 4 stopped-by-default model a dirty `[s]` cell
+  ## does NOT run, so it must NOT get a "(please wait)" (it would never be
+  ## cleared — nothing runs to replace it). Only cells `cellShouldRun` accepts —
+  ## `[x]`, the `-o` force-run-all, or a bulk-run cell flipped to `[x]` — get it.
+  for i, codeCell in md.cells:
+    if not codeCell.properties.code: continue
+    if not cellShouldRun(codeCell): continue
+    for j, showCell in md.cells:
       if showCell.properties.code: continue
       if showCell.properties.show == codeCell.properties.output:
-        md.writeIntoCell(i, "(please wait)")
+        md.writeIntoCell(j, "(please wait)")
   md.write
+
+proc cellInfoLineRange(md: MarkdownFile; idx: int): HSlice[int, int] =
+  ## Byte range of the info-string line (the fence opener, e.g.
+  ## `` ```python [s] source:foo.py ``) for cell `idx`. The cell's `rng.a` is the
+  ## first body byte; the byte before it is the `\n` ending that line, so the
+  ## line spans from the `\n` after the previous line up to (not including) that
+  ## terminator. Returned range is inclusive on both ends and never includes the
+  ## terminating `\n`. Used by `injectStoppedState` to find where to splice the
+  ## `[s]` field, and shares its back-scan logic with `writeCellState`.
+  let cell = md.cells[idx]
+  var lineStart = cell.rng.a - 1
+  if lineStart > 0 and md.buf[][lineStart] == '\n': dec lineStart  # skip the line-terminating \n
+  while lineStart > 0 and md.buf[][lineStart - 1] != '\n': dec lineStart
+  let lineEnd = cell.rng.a - 1            # the \n ending the info line (exclusive below)
+  lineStart ..< lineEnd
+
+proc injectStoppedState(md: var MarkdownFile) =
+  ## Tier 4 stopped-by-default: ensure every runnable code cell carries a `[s]`
+  ## (stopped) state field so the notebook is inert until the user asks it to run.
+  ## A runnable cell is one whose language is a registered runtime or `raw`
+  ## (`props.code == true`); a fenced block whose language isn't registered stays
+  ## inert and gets no placeholder, matching today's "unregistered = nothing runs".
+  ##
+  ## For each runnable cell whose info-string line has NO `[ ]` field, splice
+  ## ` [s]` in immediately after the language id (the first whitespace-delimited
+  ## token after the fence marker) and before any other commands, e.g.
+  ## `` ```sh `` -> `` ```sh [s] `` and
+  ## `` ```python output:simulation.txt `` -> `` ```python [s] output:simulation.txt ``.
+  ## Idempotent: a cell that already has a `[ ]` field is left alone, so repeated
+  ## saves never double up. Each splice grows the buffer, so downstream cell byte
+  ## offsets are patched via `updatePositionsByOffset` (same as `replaceShortcuts`
+  ## / `writeIntoCell`). The buffer is written once at the end so the placeholder
+  ## appears in the user's editor; the watch loop's self-write-ignoring logic in
+  ## `main` keeps mdnb's own write from feedback-looping.
+  var changed = false
+  for i in 0 ..< md.cells.len:
+    let cell = md.cells[i]
+    if not cell.properties.code: continue
+    let lineRange = md.cellInfoLineRange(i)
+    let line = md.buf[][lineRange]
+    # A fence opener is `fence + lang + rest`. Find the fence (``` or ~~~), skip
+    # it and any spaces, take the language token, then splice right after it.
+    # First: is there already a `[ ]` field anywhere on this line? If so skip.
+    var k = 0
+    var hasField = false
+    while k < line.len:
+      if line[k] == '[':
+        # a state field is `[` + one char + `]`
+        if k + 2 < line.len and line[k + 2] == ']': hasField = true; break
+      inc k
+    if hasField: continue
+    # Locate the fence marker and the end of the language id following it.
+    var p = 0
+    while p < line.len and line[p] in {' ', '\t'}: inc p            # leading ws (rare)
+    if p < line.len and line[p] == '`':
+      while p < line.len and line[p] == '`': inc p
+    elif p < line.len and line[p] == '~':
+      while p < line.len and line[p] == '~': inc p
+    else:
+      continue   # not a fence opener we recognize; leave it alone
+    while p < line.len and line[p] in {' ', '\t'}: inc p            # ws after fence
+    let langStart = p
+    while p < line.len and line[p] notin {' ', '\t'}: inc p         # the language id
+    let langEnd = p                                                 # one past the id
+    if langEnd == langStart: continue                               # no language id
+    # Splice ` [s]` at absolute buffer offset (lineRange.a + langEnd). The splice
+    # sits in the info-string line, BEFORE this cell's body (`rng.a`), so this
+    # cell AND every later one must shift by the inserted length (4 bytes for
+    # " [s]"). `updatePositionsByOffset` starts at the given index inclusive, so
+    # pass `i` (not `cell.id`) to include the current cell.
+    let spliceAt = lineRange.a + langEnd
+    md.buf[] = md.buf[][0 ..< spliceAt] & " [s]" & md.buf[][spliceAt .. ^1]
+    md.updatePositionsByOffset(i, 4)
+    changed = true
+  if changed: md.write
 
 ## ==============
 
@@ -115,6 +197,7 @@ proc process(md: var MarkdownFile) =
   if md.cleanBuild:
     md.clearAllFiles
     md.cleanBuild = false
+  md.injectStoppedState   # Tier 4: runnable cells get `[s]` if they lack a `[ ]` field
   md.collateSources
   md.markDirtyCells
   md.showWaitMessages

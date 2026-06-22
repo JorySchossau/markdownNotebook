@@ -63,6 +63,10 @@ type Running = object
 
 var running: seq[Running]    ## currently-executing cell subprocesses (module-global)
 var verbose: bool            ## set by `-v`/`--verbose`; gates per-run status logging
+var forceRunAll: bool        ## set by `-o`: force every code cell to run this pass
+                             ## regardless of its `[s/r/x/k]` state, preserving the
+                             ## clean-build contract of run-once mode under the Tier 4
+                             ## stopped-by-default model (see `cellShouldRun`).
 
 proc logRunStatus(r: Running; exitCode: int; note = "") =
   ## Verbose execution status (Tier 3): one line per completed cell run to stdout
@@ -123,17 +127,22 @@ proc cellWithSource(md: MarkdownFile; sourceFile: string): CellProperties =
   CellProperties(trimLines: defaultTrimLines)
 
 proc cellShouldRun(cell: Cell): bool =
-  ## Decide whether a code cell runs this pass under the layered `[ ]` model:
-  ## dirty-driven auto-run stays the default (a cell with no `[ ]` or stopped
-  ## states still runs when dirty); `[x]` forces a run even when clean; `s`
-  ## stops a dirty cell from auto-running until the user marks it. `r`/`k` are
-  ## mdnb-recognized control markers, never run triggers (`r` = already running,
-  ## `k` = kill-requested, handled in pollRuns).
+  ## Decide whether a code cell runs this pass under the Tier 4 stopped-by-default
+  ## model. The default is now **stop**: a runnable cell mdnb has injected `[s]`
+  ## into (or that still has no `[ ]` field) does NOT auto-run when dirty — the
+  ## user must ask for it. `markDirtyCells` still computes dirtiness and the call
+  ## graph (`inputs:`/`output:`) still propagates it; a dirty cell simply *waits*
+  ## in `[s]` until the user runs it (`[x]`), one of the bulk `:runall` /
+  ## `:runabove` / `:runbelow` commands, or the `-o` run-once path.
+  ## - `x` = execute: force-run regardless of dirty (the user's run trigger).
+  ## - `s`/`r`/`k` = stopped / running / kill-requested: don't (re)launch.
+  ## - `forceRunAll` (set by `-o`) overrides everything: every code cell runs.
   if not cell.properties.code: return false
+  if forceRunAll: return true
   case cell.properties.state
-  of 's', 'r', 'k': return false        # stopped / running / kill-requested: don't (re)launch
-  of 'x': return true                   # execute: force-run regardless of dirty
-  else: return cell.properties.dirty    # '\0' default: today's dirty-driven behavior
+  of 'x': return true                    # execute: force-run regardless of dirty
+  of 's', 'r', 'k': return false         # stopped / running / kill-requested
+  else: return false                     # '\0' (no field): stopped by default now
 
 proc startRun(md: var MarkdownFile; idx: int) =
   ## Launch one cell's process without blocking. Writes the source file, starts
