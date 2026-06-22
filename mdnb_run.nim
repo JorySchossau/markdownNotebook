@@ -144,6 +144,14 @@ proc startRun(md: var MarkdownFile; idx: int) =
   let outputFile = cell.properties.output
   let ephemeral = cell.properties.ephemeral
   sourceFile.safeWriteFile(md.sources[sourceFile])
+  # Record the command signature that produced this source, so a later
+  # `markDirtyCells` can tell that a command/arg/language edit happened even when
+  # the body — and thus the generated source — is byte-identical. Ephemeral
+  # (bare) cells fold the signature into their cache FILENAME instead (no
+  # `output:`/sidecar to pair with), so they don't need this. See
+  # `cellSignature` / `sigSidecar`.
+  if not ephemeral:
+    writeSigSidecar(sourceFile, md.sourceSigs[sourceFile])
   let language = cell.properties.language
   if language == "raw":
     # raw blocks produce no subprocess; their body IS the output. Synchronous.

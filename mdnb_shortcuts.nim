@@ -49,5 +49,9 @@ proc clearAllFiles(md: MarkdownFile) =
       if source.len > 0 and source notin seen:
         seen.incl source
         source.tryRemoveFile
+        # The command-signature sidecar (see `sigSidecar`/`markDirtyCells`) sits
+        # next to the source; sweep it on `:clean` so a clean build re-runs every
+        # cell from a known-empty signature state (sidecar absent -> dirty).
+        sigSidecarPath(source).tryRemoveFile
       let output = cell.properties.output
       if output.len > 0: output.tryRemoveFile

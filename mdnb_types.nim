@@ -45,12 +45,40 @@ type MarkdownFile = object
   cells: seq[Cell]
   runtimes: Table[string, Runtime]
   sources: Table[string, string]
+  sourceSigs: Table[string, string]          ## per-source combined command signature (see
+                                             ## `cellSignature`); the command half of the
+                                             ## dirtiness check — body is the other half
   cellsWritingToSource: Table[string, int]
   cleanBuild: bool
 
 ## ==============
 
 proc content(md: MarkdownFile; cell: Cell): string = md.buf[][cell.rng]
+
+proc cellSignature(props: CellProperties): string =
+  ## A stable string capturing every user-authored facet of a cell — its language
+  ## id and ALL commands/arguments (source/append, output, inputs, timeout, trim) —
+  ## used for dirtiness hashing alongside the body. Changing any command/arg changes
+  ## this signature, which makes the cell dirty on the next save so it re-runs (the
+  ## fix for "I edited a command but the cell didn't re-run").
+  ##
+  ## Crucially EXCLUDES the `[s/r/x/k]` `state` field: mdnb flips that itself
+  ## (`x`→`r`→`s`) on every run, so including it would mark every just-run cell
+  ## dirty again and feedback-loop. The body is NOT part of the signature — it is
+  ## folded in separately at the call site (it lives in the buffer, not here) — so
+  ## the signature is purely the command/config half and the body is the other.
+  ## The derived flags `code`/`dirty`/`ephemeral` are excluded too (they are
+  ## consequences of the commands, not independent inputs).
+  var parts: seq[string] = @[]
+  parts.add "lang=" & props.language
+  if props.isAppend: parts.add "append=" & props.source
+  elif props.source.len > 0: parts.add "source=" & props.source
+  if props.output.len > 0: parts.add "output=" & props.output
+  if props.show.len > 0: parts.add "show=" & props.show
+  if props.inputs.len > 0: parts.add "inputs=" & props.inputs.join(",")
+  parts.add "timeout=" & $props.timeout
+  parts.add "trim=" & (if props.trimTail: "tail," else: "head,") & $props.trimLines
+  parts.join("|")
 
 ## ==============
 

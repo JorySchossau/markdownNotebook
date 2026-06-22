@@ -11,13 +11,24 @@ proc collateSources(md: var MarkdownFile) =
   ## content onto whatever `source:`/`append:` already established for that
   ## target. Auto-generated sources (no explicit `source:`/`append:`) are unique
   ## per cell, so they can't collide.
+  ##
+  ## Also builds `sourceSigs`: for each source the combined command signature of
+  ## every cell writing it (see `cellSignature`). The signature captures the
+  ## language id and all commands/args — everything about a cell EXCEPT its body
+  ## and its `[s/r/x/k]` state. `markDirtyCells` compares it alongside the body so
+  ## that editing a command (e.g. `timeout:5`→`timeout:30`, or the language id)
+  ## marks the cell dirty and re-runs it, even though the body — and thus the
+  ## generated source file — is byte-identical. The state field is deliberately
+  ## excluded (mdnb flips it itself).
   for cell in md.cells:
     if not cell.properties.code: continue
     let source = cell.properties.source
     if cell.properties.isAppend:
       md.sources[source] = md.sources.getOrDefault(source) & md.content(cell) & '\n'
+      md.sourceSigs[source] = md.sourceSigs.getOrDefault(source) & cell.properties.cellSignature & "\x00"
     else:
       md.sources[source] = md.content(cell) & '\n'
+      md.sourceSigs[source] = cell.properties.cellSignature & "\x00"
     md.cellsWritingToSource[source] = md.cellsWritingToSource.getOrDefault(source) + 1
 
 proc markDirtyCells(md: var MarkdownFile) =
@@ -35,6 +46,17 @@ proc markDirtyCells(md: var MarkdownFile) =
   ## Propagation runs to a fixed point so chains are covered. It is safe to
   ## over-approximate dirtiness (an extra rerun is correct); the opposite (a
   ## stale cell) is the bug.
+  ##
+  ## Command-signature check: a non-ephemeral cell is ALSO dirty when its command
+  ## signature (language id + all commands/args — see `cellSignature`) differs
+  ## from the one recorded on the last run. The previous signature is persisted
+  ## in a sidecar file (`<source>.mdnbsig`) written alongside the source whenever
+  ## the cell runs. This makes editing a command — `timeout:5`→`timeout:30`, a
+  ## language-id change, a new `inputs:` — mark the cell dirty and re-run it even
+  ## though the body (and thus the generated source file) is byte-identical.
+  ## Ephemeral (bare) cells need no sidecar: their cache FILENAME already embeds
+  ## the signature (via `contentHash`), so a command edit changes the filename,
+  ## the old file is orphaned, and the new one is missing -> dirty.
   for i in 0 ..< md.cells.len:
     if not md.cells[i].properties.code: continue
     let source = md.cells[i].properties.source
@@ -47,6 +69,13 @@ proc markDirtyCells(md: var MarkdownFile) =
     if not fileExists(source) or (not ephemeral and not fileExists(output)):
       md.cells[i].properties.dirty = true
     elif readFile(source) != md.sources[source]:
+      md.cells[i].properties.dirty = true
+    elif not ephemeral and md.sourceSigs[source] != sigSidecar(source):
+      # Command/config changed since the last run (body is identical, but a
+      # command/arg/language-id edit moved the signature). Re-run so the new
+      # command takes effect. Sidecar may be absent on a first-ever run or after
+      # `:clean`; `sigSidecar` returns "" then, which differs from any real sig,
+      # so the cell is (correctly) treated as dirty.
       md.cells[i].properties.dirty = true
   # Producer index keyed by produced file. A cell produces its `output:` file.
   var producer: Table[string, int]

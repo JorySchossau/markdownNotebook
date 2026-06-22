@@ -82,16 +82,22 @@ proc processBodyForCells(md: var MarkdownFile) =
           props.isAppend = true
           props.source = command[1]
       of "output", "show", "inputs":
+        # Guard the argument access behind `else` (mirroring the `append` branch
+        # above): when `command` has no `:argument` (len 1), mark invalid and
+        # SKIP the inner case — otherwise `command[1]` indexes out of bounds and
+        # crashes with IndexDefect (the bare `\`\`\`output` / `\`\`\`show` /
+        # `\`\`\`inputs` with no target).
         if command.len != 2:
           echo "Skipping cell: argument required: 'command:argument'"
           invalid = true
-        case command[0]
-        of "output":
-          props.code = true
-          props.output = command[1]
-        of "show": props.show = command[1]
-        of "inputs": props.inputs = command[1].split(',')
-        else: discard
+        else:
+          case command[0]
+          of "output":
+            props.code = true
+            props.output = command[1]
+          of "show": props.show = command[1]
+          of "inputs": props.inputs = command[1].split(',')
+          else: discard
       of "timeout":
         if command.len != 2:
           echo "Skipping cell: argument required: 'timeout:N' (seconds)"
@@ -151,17 +157,21 @@ proc processBodyForCells(md: var MarkdownFile) =
     var contentEnd = buf[].rfind(chars = {'\n'}, last = pos.last - 1)
     if contentEnd <= contentStart: contentEnd = contentStart
     if props.ephemeral:
-      # Content-derived tmp name in the cwd (not `temp/`). The name encodes ONLY
-      # a hash of the block's body — no cell id — so a cell's cache identity is
-      # its content, not its position. Inserting/deleting/reordering blocks above
-      # leaves an unchanged cell's content (and thus its hash, its file)
-      # unchanged, so it stays a cache hit and doesn't rerun. Editing a cell's
-      # body changes its hash -> new filename; the orphaned old-hash file is
-      # swept by `sweepEphemeralCache` each run. Two distinct bare blocks with
-      # identical bodies share one cache file, which is correct (identical
-      # content runs identically). See mdnb_grammar.nim `ephemeralNamePattern`.
+      # Content-derived tmp name in the cwd (not `temp/`). The name encodes a hash
+      # of the block's body PLUS its command signature (language id and any
+      # commands — bare blocks carry only the language, but the signature is used
+      # uniformly so a future command on a bare block also invalidates) — no cell
+      # id — so a cell's cache identity is its content+config, not its position.
+      # Inserting/deleting/reordering blocks above leaves an unchanged cell's
+      # content (and thus its hash, its file) unchanged, so it stays a cache hit
+      # and doesn't rerun. Editing a cell's body OR its language id changes its
+      # hash -> new filename; the orphaned old-hash file is swept by
+      # `sweepEphemeralCache` each run. Two distinct bare blocks with identical
+      # bodies and language share one cache file, which is correct (identical
+      # content+config runs identically). See mdnb_grammar.nim
+      # `ephemeralNamePattern` and `cellSignature` in mdnb_types.nim.
       let body = md.buf[][contentStart + 1 .. contentEnd]
-      let h = contentHash(body)
+      let h = contentHash(body & "\x00" & props.cellSignature)
       let base = splitFile(md.filename).name & "_tmp_" & h
       props.source = base & md.runtimes[props.language].extension
     md.addCell(contentStart + 1 .. contentEnd, props)
