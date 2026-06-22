@@ -49,9 +49,14 @@ proc replaceShortcuts(md: var MarkdownFile) =
         startNextChunk += deltaOffset
         case kind
         of skClean: md.cleanBuild = true
-        of skRunAll: md.runAll = true
-        of skRunAbove: md.runAboveAt = fragpos[0]
-        of skRunBelow: md.runBelowAt = fragpos[0]
+        of skRunAll: md.runMode = rmAll
+        # cell_i is the index of the first cell at or below this command line
+        # (the gap being scanned is the prose BEFORE cell cell_i), so it's exactly
+        # the boundary between "above" and "below" cells. Capturing the INDEX
+        # (not the byte offset) is robust to the offset shifts that happen as the
+        # command line is removed and downstream cells are repositioned.
+        of skRunAbove: md.runMode = rmAbove; md.runBoundaryAt = cell_i
+        of skRunBelow: md.runMode = rmBelow; md.runBoundaryAt = cell_i
         else: discard
     endPrevChunk = startNextChunk
 
