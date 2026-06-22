@@ -40,7 +40,7 @@ Here are the steps:
 
 Optional flags:
 * `-o` — run once and exit (also forces a clean build) instead of watching. A clean build **force-runs every runnable code cell in document order regardless of its `[s/r/x/k]` state** (like `:runall`), so `./mdnb -o file.md` always produces a full notebook — the stopped-by-default model does not apply here, and `inputs:`/`output:` chains resolve because each producer finishes before its consumer starts.
-* `-v` / `--verbose` — print execution status to stdout: for every cell run, the cell id, the resolved system command, the exit code (or kill reason), and how long it took. Off by default so a normal run is quiet. Combine freely, e.g. `./mdnb -o -v myMarkdownFile.md`.
+* `-v` / `--verbose` — print execution status to stdout: for every cell run, the cell id, the resolved system command, the exit code (or kill reason), and how long it took, plus one line per image-cache refresh pass (see "Image cache refresh" below). Off by default so a normal run is quiet. Combine freely, e.g. `./mdnb -o -v myMarkdownFile.md`.
 
 Then, open your markdown files in your favorite editor and `save` the file to update the code interpretation. **By default nothing runs on save** — mdnb injects a `[s]` (stopped) marker into each runnable code cell and leaves it inert. Run a single cell by changing its `[s]` to `[x]`, or run a batch with `:runall` / `:runabove` / `:runbelow` (see Supported Commands). Let's say you want to run bash and python code. You can make mdnb aware of such code blocks, and customize how that code is run through the YAML header. The full example is below, and the resulting transformed version is shown below that.
 
@@ -211,6 +211,16 @@ Non-Code Fence Commands
 * `:runabove` - like `:runall`, but limited to the runnable code cells **above** the command line (cells whose fence is entirely above it). Runs them in document order.
 * `:runbelow` - like `:runall`, but limited to the runnable code cells **at or below** the command line. Runs them in document order.
 ```
+
+## Image cache refresh
+
+Markdown viewers (e.g. Zettlr) cache inline images by URL. When a code cell regenerates an image **without changing its filename** (the normal mdnb workflow — filenames are stable, only the pixels change), the viewer keeps showing the stale, cached image. mdnb works around this automatically: every time a cell finishes running, it runs a two-pass **perturb/revert** trick over the prose's image references, saving the file between passes so the viewer re-resolves (and re-decodes) each image.
+
+Both image-reference flavors the viewer supports are handled:
+* classic markdown — `![description](image_url)` — the URL is first rewritten to `image_url#0` (a URL fragment is a visual no-op but a cache-busting change), saved, then reverted and saved again.
+* html flavor — `<img ... src="image_url" ...>` — a trailing space is appended inside the quoted `src` value, saved, then collapsed back and saved again (a renderer collapses the space, so it is a visual no-op).
+
+The two passes cancel, so the file ends up **byte-identical** to its pre-refresh state — the trick is invisible to the author and to version control; only the viewer's image cache is affected. References inside fenced code blocks are never touched (the scan operates on prose only). When the prose contains no image references at all, the refresh is a no-op and no extra saves happen. With `-v`/`--verbose`, mdnb prints one line per pass (`image-cache refresh pass 1 (perturb): N image(s)` / `pass 2 (revert): N image(s)`), or a `no inline images found, skipping` note.
 
 ## To-Do
 

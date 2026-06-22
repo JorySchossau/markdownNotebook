@@ -257,6 +257,228 @@ proc readTrimmed(s: Stream; tail: bool; n: int): string =
       core & &"\n... (trim:tail,{n} — {total - n} lines truncated)"
     else: core
 
+## ==============
+## md-viewer image-cache refresh. Markdown viewers (e.g. Zettlr) cache inline
+## images by URL, so when a cell regenerates an image without changing its
+## filename (the normal mdnb workflow — filenames are stable), the viewer keeps
+## showing the stale pixels. The refresh trick, applied once a cell finishes and
+## has possibly regenerated images: two passes over the prose's image references,
+## saving between them. The first pass perturbs every image URL in a way the
+## viewer's cache is sensitive to but that does not change the rendered image;
+## the second pass reverts the perturbation so the author and version control
+## see the original markdown again. Each save forces the viewer to re-resolve
+## (and thus re-decode) the image.
+##
+## Two image-reference flavors are handled (the two the viewer supports):
+##   1. classic markdown `![description](image_url)` -> append `#0` to the URL.
+##   2. html flavor `<img ... src="image_url" ...>` -> append a trailing space
+##      inside the quoted src value.
+## Both are visual no-ops: a URL fragment (`#0`) is not part of the fetched path,
+## and a trailing space in an html attribute value is collapsed by the renderer.
+##
+## The scan operates on the prose GAPS only — never inside a fenced code block —
+## mirroring `replaceShortcuts`'s gap-walking loop, so an `![..](..)` that is part
+## of a code sample is never perturbed. Cell byte ranges shift between the two
+## passes (each save re-reads from disk), so offsets are recomputed per pass from
+## a fresh gap walk rather than carried across.
+
+proc transformImageUrl(url, fragSuffix: string): string =
+  ## Apply (or revert) the cache-busting perturbation to a classic-markdown image
+  ## URL. `fragSuffix` is the fragment to ensure the URL ends with (`#0`):
+  ##   - transform (`fragSuffix = "#0"`): `foo.png` -> `foo.png#0`
+  ##   - revert    (`fragSuffix = ""`):   `foo.png#0` -> `foo.png`
+  ## Idempotent: appending when the fragment is already present is a no-op, so a
+  ## repeated perturb pass does not stack fragments.
+  if fragSuffix.len == 0:
+    if url.endsWith("#0"): result = url[0 ..< url.len - 2]
+    else: result = url
+  else:
+    if url.endsWith(fragSuffix): result = url      # already perturbed; leave as-is
+    else: result = url & fragSuffix
+
+proc perturbHtmlSrcValue(val, fragSuffix: string): string =
+  ## Apply (or revert) the cache-busting perturbation to an html `<img src="...">`
+  ## value. The html perturbation is a trailing space inside the quotes (a renderer
+  ## collapses it, so it is a visual no-op the viewer cache is still sensitive to):
+  ##   - transform (`fragSuffix != ""`): `foo.png` -> `foo.png ` (trailing space)
+  ##   - revert    (`fragSuffix == ""`):  `foo.png ` -> `foo.png` (strip one space)
+  ## Idempotent on both directions. (`fragSuffix` is used only as a non-empty flag
+  ## here — the actual perturbation char is always a space for the html flavor.)
+  if fragSuffix.len > 0:
+    if val.endsWith(" "): result = val
+    else: result = val & " "
+  else:
+    if val.endsWith(" "): result = val[0 ..< val.len - 1]
+    else: result = val
+
+proc applyToProseMarkdownImages(md: var MarkdownFile; fragSuffix: string;
+                                 imgCount: var int) =
+  ## Walk every prose gap of `md` and rewrite each classic-markdown image URL
+  ## (`![desc](url)`) via `transformImageUrl` with `fragSuffix`. Fenced code blocks
+  ## are skipped: their bytes are inside a cell's `rng`, and only the gaps between
+  ## cells are scanned. This mirrors the gap walk in `replaceShortcuts`
+  ## (`endPrevChunk`/`startNextChunk` track the current gap's bounds as edits shift
+  ## the buffer). `imgCount` accumulates rewrites for verbose reporting.
+  var matches = newSeq[string](1)
+  var endPrevChunk, startNextChunk = 0
+  for cell_i in 0 .. md.cells.len:
+    startNextChunk = if cell_i == md.cells.len: md.buf[].len - 1
+                     else: md.cells[cell_i].rng.a
+    var pos: tuple[first, last: int] = (-1, 0)
+    while true:
+      matches[0] = ""
+      pos = md.buf[][endPrevChunk .. startNextChunk].findBounds(mdImagePattern,
+                                                                matches, start = pos.last)
+      if pos.first == -1: break
+      # `matches[0]` is the captured URL. `findBounds` returns slice-relative
+      # offsets, where `pos.first` is the `!` and `pos.last` is the closing `)`.
+      # The URL sits immediately before the `)`, so its absolute start is
+      # `endPrevChunk + pos.last - matches[0].len` (slice index 0 == buffer index
+      # `endPrevChunk`, since the slice began there).
+      let urlStart = endPrevChunk + pos.last - matches[0].len
+      let newUrl = transformImageUrl(matches[0], fragSuffix)
+      if newUrl != matches[0]:
+        md.buf[] = md.buf[][0 ..< urlStart] & newUrl &
+                   md.buf[][urlStart + matches[0].len .. ^1]
+        let delta = newUrl.len - matches[0].len
+        if cell_i < md.cells.len:
+          md.updatePositionsByOffset(md.cells[cell_i].id, delta)
+        startNextChunk += delta
+        inc imgCount
+      # Advance past this URL so the next scan continues after it.
+      pos = (pos.first, pos.first + (if newUrl != matches[0]: newUrl.len - 1
+                                     else: matches[0].len - 1))
+    endPrevChunk = startNextChunk
+
+proc findHtmlImgSrc(buf: string; gapA, gapB: int;
+                    outUrlStart, outUrlEnd: var int): bool =
+  ## Manual scan for the next `<img ... src="..." ...>` tag's src value within the
+  ## prose gap `[gapA .. gapB]`. On success returns true with `outUrlStart`/`
+  ## outUrlEnd` set to the absolute buffer offsets of the src value (the bytes
+  ## inside the quotes, exclusive of the quotes themselves). On no-more-matches
+  ## returns false.
+  ##
+  ## A hand-written scan rather than a PEG because a robust PEG for arbitrary html
+  ## attributes (quoted, unquoted, single/double quotes) runs into Nim PEG's
+  ## charset/quote-parsing limitations; the scanner handles every attribute shape
+  ## the viewer emits (it only needs to locate the `src` attribute's quoted value,
+  ## skipping over other name=value attributes that may contain `>` or quotes
+  ## inside their own quotes). Anchor is case-insensitive `<img`, then the first
+  ## `src` attribute whose value is single- or double-quoted.
+  var i = gapA
+  while i <= gapB - 4:
+    if buf[i] == '<' and buf[i + 1] == 'i' and buf[i + 2] == 'm' and
+       buf[i + 3] == 'g':
+      # Found `<img` — scan attributes within this tag until `>` or end of gap.
+      var j = i + 4
+      var foundSrc = false
+      var srcStart, srcEnd = 0
+      var q: char = '\0'
+      while j <= gapB:
+        let c = buf[j]
+        if c == '>':
+          break                            # end of tag
+        if c == ' ' or c == '\t' or c == '\n' or c == '/':
+          inc j; continue                  # skip whitespace and self-close slash
+        # Read an attribute name up to '=' or whitespace.
+        let nameStart = j
+        while j <= gapB and buf[j] != '=' and buf[j] != ' ' and
+              buf[j] != '\t' and buf[j] != '\n' and buf[j] != '>' : inc j
+        let name = buf[nameStart ..< j]
+        if j <= gapB and buf[j] == '=':
+          inc j                             # consume '='
+          while j <= gapB and (buf[j] == ' ' or buf[j] == '\t'): inc j  # skip ws
+          if j <= gapB and (buf[j] == '"' or buf[j] == '\''):
+            q = buf[j]; inc j               # opening quote
+            let valStart = j
+            while j <= gapB and buf[j] != q: inc j
+            if j <= gapB:
+              # quoted value spans [valStart ..< j]; closing quote at j.
+              if name == "src" and not foundSrc:
+                foundSrc = true
+                srcStart = valStart
+                srcEnd = j                 # exclusive end of value
+              inc j                         # consume closing quote
+            else:
+              break                         # unterminated quote; bail on tag
+          else:
+            # Unquoted value: run of non-whitespace, non->.
+            while j <= gapB and buf[j] != ' ' and buf[j] != '\t' and
+                  buf[j] != '\n' and buf[j] != '>': inc j
+        else:
+          # bare attribute (no value) — name already consumed; loop continues.
+          discard
+      if foundSrc:
+        outUrlStart = srcStart
+        outUrlEnd = srcEnd
+        return true
+      i = j                                 # tag had no src; resume after it
+    else:
+      inc i
+  false
+
+proc applyToProseHtmlImages(md: var MarkdownFile; fragSuffix: string;
+                             imgCount: var int) =
+  ## Walk every prose gap and rewrite each `<img src="...">` value via
+  ## `perturbHtmlSrcValue` with `fragSuffix`. Same gap-walking and offset-patching
+  ## approach as `applyToProseMarkdownImages`; the html tag is located by the
+  ## manual `findHtmlImgSrc` scanner. `imgCount` accumulates rewrites.
+  var endPrevChunk, startNextChunk = 0
+  for cell_i in 0 .. md.cells.len:
+    startNextChunk = if cell_i == md.cells.len: md.buf[].len - 1
+                     else: md.cells[cell_i].rng.a
+    var scanFrom = endPrevChunk
+    while true:
+      var urlStart, urlEnd = 0
+      if not md.buf[].findHtmlImgSrc(scanFrom, startNextChunk, urlStart, urlEnd):
+        break
+      let oldVal = md.buf[][urlStart ..< urlEnd]
+      let newVal = perturbHtmlSrcValue(oldVal, fragSuffix)
+      if newVal != oldVal:
+        md.buf[] = md.buf[][0 ..< urlStart] & newVal &
+                   md.buf[][urlEnd .. ^1]
+        let delta = newVal.len - oldVal.len
+        if cell_i < md.cells.len:
+          md.updatePositionsByOffset(md.cells[cell_i].id, delta)
+        startNextChunk += delta
+        urlEnd = urlStart + newVal.len
+        inc imgCount
+      # Continue scanning after this value.
+      scanFrom = urlEnd
+    endPrevChunk = startNextChunk
+
+import std/os
+proc refreshImageCache(md: var MarkdownFile) =
+  ## Force a markdown viewer to re-decode inline images after a cell run. Runs the
+  ## perturb/revert trick: pass 1 rewrites every prose image URL with a visual
+  ## no-op perturbation and saves; pass 2 reverts it and saves. Each save makes
+  ## the viewer drop its cached pixels for those URLs. Called from `reapFinished`
+  ## so a regenerated image (same filename, new pixels) shows up immediately.
+  ##
+  ## Both image-reference flavors the viewer supports are handled in each pass,
+  ## in document order. The final file is byte-identical to its pre-refresh state
+  ## (the two passes cancel), so this is invisible to the author and to version
+  ## control — only the viewer's image cache is affected. No-op (and no extra
+  ## saves) when the prose contains no image references at all.
+  var imgCount = 0
+  # Pass 1: perturb. Append `#0` to markdown URLs, a trailing space to html src.
+  md.applyToProseMarkdownImages("#0", imgCount)
+  md.applyToProseHtmlImages("#0", imgCount)
+  if imgCount == 0:
+    if verbose: echo "[mdnb] image-cache refresh: no inline images found, skipping"
+    return
+  md.write
+  sleep(50) # sleep a bit so the viewer has a chance to recognize the change
+  if verbose: echo &"[mdnb] image-cache refresh pass 1 (perturb): {imgCount} image(s)"
+  # Pass 2: revert. Strip the `#0` fragment / collapse the trailing space.
+  var revertCount = 0
+  md.applyToProseMarkdownImages("", revertCount)
+  md.applyToProseHtmlImages("", revertCount)
+  md.write
+  if verbose: echo &"[mdnb] image-cache refresh pass 2 (revert): {revertCount} image(s)"
+
+## ==============
+
 proc reapFinished(md: var MarkdownFile; r: var Running) =
   ## Read the finished process's stdout, write it in full to its `output:` file,
   ## write a trimmed view into any matching `show:` cell of the current md, then
@@ -296,6 +518,10 @@ proc reapFinished(md: var MarkdownFile; r: var Running) =
         md.cells[i].properties.state = 's'   # keep in-memory state synced with disk
         md.writeCellState(i, 's')
         break
+    # A bare-block cell may have regenerated an image (it ran for its side
+    # effects, e.g. `python` writing `plot.png`). Refresh the viewer's image
+    # cache so the new pixels show up.
+    md.refreshImageCache
     return
   let raw = r.acc.strip
   let errored = exitCode != 0          # reapFinished is only reached once finished, so != 0 means failed
@@ -325,6 +551,11 @@ proc reapFinished(md: var MarkdownFile; r: var Running) =
       md.cells[i].properties.state = 's'   # keep in-memory state synced with disk
       md.writeCellState(i, 's')
       break
+  # Refresh the md viewer's image cache: a cell that ran may have regenerated an
+  # image (same filename, new pixels), and viewers cache by URL. The perturb/
+  # revert trick forces a re-decode. Runs after the cell's output/state are
+  # settled so the refresh is the last write the viewer sees this pass.
+  md.refreshImageCache
 
 proc reapTimeout(md: var MarkdownFile; r: Running) =
   ## Kill a cell that exceeded its `timeout:` and write a notice explaining what

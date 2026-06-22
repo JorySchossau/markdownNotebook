@@ -63,3 +63,13 @@ let
   runAllPattern = peg"""\n ":runall" (!\n \s)* \n"""
   runAbovePattern = peg"""\n ":runabove" (!\n \s)* \n"""
   runBelowPattern = peg"""\n ":runbelow" (!\n \s)* \n"""
+  # Image reference used by `refreshImageCache` (the md-viewer image-cache refresh
+  # trick). This matches the classic markdown image form
+  #   ![description](image_url)
+  # and captures the URL (everything up to the closing paren) as its one group, so
+  # the perturb/revert passes can rewrite it. The html `<img ...>` form is matched
+  # by a manual scan in `applyToProseImagesHtml` instead, because a robust PEG for
+  # arbitrary html attributes (quoted, unquoted, mixed quotes) runs into Nim's PEG
+  # charset/quote-parsing limitations; the hand scanner is clearer and handles
+  # every attribute shape the viewer emits.
+  mdImagePattern = peg"'!' '[' ([^\]]*) ']' '(' {([^\)]*)} ')'"
