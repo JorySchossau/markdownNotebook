@@ -52,6 +52,7 @@ type Running = object
   language: string           ## runtime language id (for buildCommand lookup at start)
   sourceFile: string         ## the cell's source path — also our identity key
   outputFile: string         ## the cell's output: path — where captured stdout goes
+  ephemeral: bool            ## bare-block cell: cwd tmp source kept as a cache, no output kept
   started: Time              ## when the cell was launched — for the per-cell timeout
   timeoutSecs: int           ## resolved per-cell timeout in seconds (default 5)
   cellId: int                ## 1-based cell ordinal at launch — for verbose status
@@ -141,6 +142,7 @@ proc startRun(md: var MarkdownFile; idx: int) =
   let cell = md.cells[idx]
   let sourceFile = cell.properties.source
   let outputFile = cell.properties.output
+  let ephemeral = cell.properties.ephemeral
   sourceFile.safeWriteFile(md.sources[sourceFile])
   let language = cell.properties.language
   if language == "raw":
@@ -156,6 +158,7 @@ proc startRun(md: var MarkdownFile; idx: int) =
   let secs = cell.properties.timeout
   running.add Running(p: p, filename: md.filename, language: language,
                       sourceFile: sourceFile, outputFile: outputFile,
+                      ephemeral: ephemeral,
                       started: getTime(), timeoutSecs: secs,
                       cellId: cell.id, command: command)
   if verbose:
@@ -265,6 +268,20 @@ proc reapFinished(md: var MarkdownFile; r: var Running) =
   r.drainOutput
   let exitCode = r.p.peekExitCode
   r.p.close
+  # Ephemeral bare-block cell: it ran for its side effects only — no `output:`
+  # file is kept and there is no `show:` cell to fill. The tmp source stays on
+  # disk as a CACHE so an unchanged bare block does not re-run on the next save
+  # (see markDirtyCells: it skips a cell whose source file matches its content).
+  # `:clean` is what wipes these; editing the block changes its content-derived
+  # filename, so the stale cache file is simply left behind (harmless) and the
+  # new one is missing -> dirty -> runs. Just report status and settle state.
+  if r.ephemeral:
+    r.logRunStatus(exitCode)
+    for i, c in md.cells:
+      if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
+        md.writeCellState(i, 's')
+        break
+    return
   let raw = r.acc.strip
   let errored = exitCode != 0          # reapFinished is only reached once finished, so != 0 means failed
   let body =
@@ -301,6 +318,15 @@ proc reapTimeout(md: var MarkdownFile; r: Running) =
   osproc.kill(r.p)
   let exitCode = r.p.peekExitCode
   r.p.close
+  # Ephemeral bare-block cell: no `output:`/`show:` to write a notice into. The
+  # tmp source stays on disk as a cache (wiped by `:clean`). Just report status.
+  if r.ephemeral:
+    r.logRunStatus(exitCode, note = &"killed (timeout:{r.timeoutSecs}s)")
+    for i, c in md.cells:
+      if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
+        md.writeCellState(i, 's')
+        break
+    return
   let notice = &"(mdnb killed this cell: exceeded timeout:{r.timeoutSecs}s)"
   r.outputFile.safeWriteFile(notice)
   let showIdx = md.showCellForOutput(r.outputFile)
@@ -363,11 +389,40 @@ proc pollRuns(md: var MarkdownFile) =
 
 ## ==============
 
+proc sweepEphemeralCache(md: var MarkdownFile) =
+  ## Garbage-collect orphaned bare-block (ephemeral) tmp files for *this* md
+  ## file. Each run leaves a cache file per distinct cell body, named
+  ## `<mdname>_tmp_<hash>.<ext>`; when a cell's body changes (new hash) or a cell
+  ## is deleted, its old file becomes an orphan. Rather than track "the last
+  ## filename" per cell (which needs a stable cross-parse identity cell ids can't
+  ## provide), we treat the filesystem as the map: after parsing, mdnb knows every
+  ## CURRENT cell's source path, so any mdnb-authored tmp file for this md that
+  ## isn't a current source is an orphan and is deleted here. Files still in use
+  ## by a running subprocess are spared (a cell edited mid-run keeps its source
+  ## until the run is reaped). Per-md: a multi-file run never touches another
+  ## file's cache. Stateless — no map to maintain or corrupt.
+  let base = splitFile(md.filename).name
+  # Sources the current parse knows about, plus any file a running cell still
+  # needs (an edited-while-running cell's source is live until it's reaped).
+  var keep: HashSet[string]
+  for cell in md.cells:
+    if cell.properties.code and cell.properties.source.len > 0:
+      keep.incl cell.properties.source
+  for r in running:
+    if r.sourceFile.len > 0: keep.incl r.sourceFile
+  for path in walkFiles(base & "_tmp_*"):
+    if path in keep: continue
+    # Only sweep files matching mdnb's exact ephemeral naming (not a user file
+    # that merely contains `_tmp_`): the name must end in `_tmp_<8hex>.<ext>`.
+    if not path.looksEphemeral: continue
+    tryRemoveFile(path)
+
 proc runCells(md: var MarkdownFile) =
   ## Launch every cell that should run this pass (dirty, or `[x]`-forced) and
   ## reap any that finished since last cycle. Non-blocking: long cells are
   ## left in `running` and reaped on subsequent calls rather than blocking here.
   createDir "temp"
+  md.sweepEphemeralCache
   md.pollRuns
   for i, cell in md.cells:
     if cellShouldRun(cell):

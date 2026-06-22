@@ -15,6 +15,11 @@ type CellProperties = object
   dirty: bool
   code: bool
   isAppend: bool
+  ephemeral: bool   ## bare-block cell (no `source:`/`append:`/`output:`): mdnb
+                    ## generates a tmp source in the current directory and runs
+                    ## it for its side effects. The tmp file is kept as a CACHE
+                    ## (content-hash in its name) so an unchanged block doesn't
+                    ## re-run; `:clean` wipes it. No `output:` is kept.
   inputs: seq[string]
   language, output, source, show: string   ## "" = absent (no such command given)
   timeout: int   ## `timeout:N` in seconds; defaults to `defaultTimeout`.

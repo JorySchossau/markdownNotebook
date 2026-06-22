@@ -43,7 +43,11 @@ proc clearAllFiles(md: MarkdownFile) =
   for cell in md.cells:
     if cell.properties.code:
       let source = cell.properties.source
-      if source notin seen:
+      # Ephemeral bare-block sources are cache files in the cwd (one per distinct
+      # body); wipe them on `:clean` too so the cache is fully reset. The output
+      # of an ephemeral cell is empty (""), so guard it rather than removeFile("").
+      if source.len > 0 and source notin seen:
         seen.incl source
-        removeFile(source)
-      removeFile(cell.properties.output)
+        source.tryRemoveFile
+      let output = cell.properties.output
+      if output.len > 0: output.tryRemoveFile

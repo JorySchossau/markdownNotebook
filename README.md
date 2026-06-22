@@ -180,6 +180,7 @@ YAML Header Commands
     filename is appended to the command instead.
 
 Code Fence Commands
+* *(bare block)* - A fenced code block whose language is a registered runtime but which has none of the commands below (`source:`/`append:`/`output:`/…) is run **as-is for its side effects**: mdnb writes the body to a tmp file in the current directory (named `<mdname>_tmp_<hash>.<ext>`) and runs it. No output is captured or shown — a bare block is "just execute this". The tmp file is kept as a **cache** keyed on a short hash of the block's *content* (not its position), so re-saving an unchanged block — even after inserting/deleting/reordering other blocks above it — does not re-run it. Editing the block changes its hash and thus its filename; mdnb **garbage-collects** the orphaned old-hash file on the next run, so tmp files don't accumulate. `:clean` wipes the cache and forces a fresh run. A block whose language is *not* registered in the frontmatter stays inert (nothing runs).
 * `source` - Run this block, autogenerate source filename, ignore output
 * `source:filename` - Run this block, defining `filename` as the *entire* source for that file. If several cells name the same file with `source:`, the last one in document order wins (each overwrites).
 * `append:filename` - Run this block, *appending* its content to `filename`, so several cells spread through the prose can all contribute to one source file. `source:` and `append:` are mutually exclusive within a single cell.
@@ -202,7 +203,7 @@ Special Supported Language
 
 Non-Code Fence Commands
 * `show:filename` - replace this text with a markdown hyperlink to `filename` if image, or a codeblock if not an image
-* `:clean` - on a line of its own. When mdnb next processes the file, this line is removed, every generated source and output file for the code cells in this file is deleted, and all cells are rerun from scratch. Use it to force a full fresh build; a normal save only reruns cells whose source or output is missing or would change.
+* `:clean` - on a line of its own. When mdnb next processes the file, this line is removed, every generated source and output file for the code cells in this file is deleted (including bare-block cache files), and all cells are rerun from scratch. Use it to force a full fresh build; a normal save only reruns cells whose source or output is missing or would change.
 ```
 
 ## To-Do

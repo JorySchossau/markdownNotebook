@@ -127,15 +127,43 @@ proc processBodyForCells(md: var MarkdownFile) =
     # up front so the execution layer can read them unconditionally.
     if props.timeout == 0: props.timeout = defaultTimeout
     if props.trimLines == 0: props.trimLines = defaultTrimLines
+    # A bare language-fence (recognized language, no `source:`/`append:`/`output:`
+    # command) is an ephemeral cell: mdnb generates a tmp source in the current
+    # directory and runs it for its side effects. No `output:` is kept — a bare
+    # block is "just run this", not "show me what it printed". The tmp file acts
+    # as a CACHE: it stays around between runs and is reused, so an unchanged
+    # bare block does not re-run (see markDirtyCells). Cache invalidation is
+    # baked into the filename: it embeds a short hash of the cell's *content*, so
+    # editing the block produces a new filename (old file left behind, harmless)
+    # and the new file is missing -> dirty -> runs. `:clean` wipes them all.
+    if not props.code and props.language.len > 0 and props.language in md.runtimes:
+      props.code = true
+      props.ephemeral = true
     if props.code and props.language.len == 0: invalid = true
     if invalid: continue
-    if props.code and props.source.len == 0:
+    elif props.code and props.source.len == 0:
       props.source = "temp" / &"{splitFile(md.filename).name}_src{cellid}{md.runtimes[props.language].extension}"
-    if props.code and props.output.len == 0:
+    # Ephemeral cells keep no `output:` (nothing is captured/displayed); other
+    # runnable cells without an explicit `output:` get the default txt path.
+    if props.code and not props.ephemeral and props.output.len == 0:
       props.output = "temp" / &"{splitFile(md.filename).name}_src{cellid}.txt"
     let contentStart = buf[].find(chars = {'\n'}, start = pos.first + 2)
     var contentEnd = buf[].rfind(chars = {'\n'}, last = pos.last - 1)
     if contentEnd <= contentStart: contentEnd = contentStart
+    if props.ephemeral:
+      # Content-derived tmp name in the cwd (not `temp/`). The name encodes ONLY
+      # a hash of the block's body — no cell id — so a cell's cache identity is
+      # its content, not its position. Inserting/deleting/reordering blocks above
+      # leaves an unchanged cell's content (and thus its hash, its file)
+      # unchanged, so it stays a cache hit and doesn't rerun. Editing a cell's
+      # body changes its hash -> new filename; the orphaned old-hash file is
+      # swept by `sweepEphemeralCache` each run. Two distinct bare blocks with
+      # identical bodies share one cache file, which is correct (identical
+      # content runs identically). See mdnb_grammar.nim `ephemeralNamePattern`.
+      let body = md.buf[][contentStart + 1 .. contentEnd]
+      let h = contentHash(body)
+      let base = splitFile(md.filename).name & "_tmp_" & h
+      props.source = base & md.runtimes[props.language].extension
     md.addCell(contentStart + 1 .. contentEnd, props)
   if cellCache.len >= cellCacheMax:
     var stale: seq[Cell]

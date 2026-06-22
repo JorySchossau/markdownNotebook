@@ -15,7 +15,7 @@
 ## grammar and model first, then parse, the shortcut/clean pass, the execution
 ## layer, then the pipeline orchestrator (which calls all of the above), and
 ## finally the CLI/watch loop.
-import std/[strutils, sequtils, pegs, tables, sets, os, strformat, osproc, times, streams]
+import std/[strutils, sequtils, pegs, tables, sets, os, strformat, osproc, times, streams, hashes]
 
 include mdnb_grammar
 include mdnb_types

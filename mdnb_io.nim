@@ -12,4 +12,13 @@ proc safeWriteFile(filename, contents: string) =
     except CatchableError:
       discard
 
+proc tryRemoveFile(filename: string) =
+  ## Remove a file if it exists, swallowing errors (an already-deleted file or a
+  ## permissions error should not abort the pipeline). Used by `:clean` to wipe
+  ## generated source/output files, including ephemeral bare-block cache files.
+  try:
+    if fileExists(filename): removeFile(filename)
+  except CatchableError:
+    discard
+
 proc write(md: MarkdownFile) = md.filename.safeWriteFile(md.buf[])

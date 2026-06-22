@@ -39,7 +39,12 @@ proc markDirtyCells(md: var MarkdownFile) =
     if not md.cells[i].properties.code: continue
     let source = md.cells[i].properties.source
     let output = md.cells[i].properties.output
-    if not fileExists(source) or not fileExists(output):
+    let ephemeral = md.cells[i].properties.ephemeral
+    # An ephemeral (bare-block) cell has no `output:` file, so only its source
+    # cache file gates dirtiness: it is dirty iff the source is missing or its
+    # content differs from what's cached on disk. That missing/differ check is
+    # exactly the cache — an unchanged bare block re-saved does not re-run.
+    if not fileExists(source) or (not ephemeral and not fileExists(output)):
       md.cells[i].properties.dirty = true
     elif readFile(source) != md.sources[source]:
       md.cells[i].properties.dirty = true
