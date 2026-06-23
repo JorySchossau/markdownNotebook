@@ -1,4 +1,7 @@
 ## Safe IO primitives: retry-loop wrappers around file IO that never throw (agents.md §9 gotcha: they retry forever).
+
+var verbose: bool            ## set by `-v`/`--verbose`; gates per-run status logging (declared here — read from both `mdnb_imagecache` and `mdnb_run`, which both precede `mdnb_cli` where it's set).
+
 proc safeWriteFile(filename, contents: string) =
   var error = true
   while error:

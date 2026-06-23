@@ -7,6 +7,7 @@ include mdnb_io
 include mdnb_parse_commands
 include mdnb_parse
 include mdnb_shortcuts
+include mdnb_imagecache
 include mdnb_run
 include mdnb_pipeline
 include mdnb_cli
