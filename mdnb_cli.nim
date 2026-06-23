@@ -1,5 +1,5 @@
-## CLI and the watch loop. Parses args, polls each watched file's mtime every 500ms, debounces saves closer together than `debounceInterval`, and runs the pipeline on change. Native watchers (inotify/FSEvents) are deliberately not used (agents.md §6 `main`).
-## Async (Tier 2): each `md` is kept alive across cycles so a long-running cell is reaped on a later cycle without blocking; every cycle reaps finished subprocesses for every watched file, so cell A's slow run never blocks cell B's output in another file. `debounceInterval` is a save-spacing guard (two saves closer together, by mtime, are treated as one), not a poll-rate change — polling stays at 500ms.
+## CLI and the watch loop. Parses args, polls each watched file's mtime every 200ms, debounces saves closer together than `debounceInterval`, and runs the pipeline on change. Native watchers (inotify/FSEvents) are deliberately not used (agents.md §6 `main`).
+## Async (Tier 2): each `md` is kept alive across cycles so a long-running cell is reaped on a later cycle without blocking; every cycle reaps finished subprocesses for every watched file, so cell A's slow run never blocks cell B's output in another file. `debounceInterval` is a save-spacing guard (two saves closer together, by mtime, are treated as one), not a poll-rate change — polling stays at 200ms.
 const debounceInterval = initDuration(seconds = 1)
 
 proc getLastModTime(filename: string): Time =
@@ -75,7 +75,7 @@ proc main =
           selfWriteTimes[idx] = getLastModTime(filename)
           modTimes[idx] = selfWriteTimes[idx]
     if looping:
-      sleep(500)
+      sleep(200)
     else:
       # Run-once (`-o`): one-shot mode expects full output before exit, so block here until every launched cell is reaped, then finish.
       while running.len > 0:
