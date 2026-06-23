@@ -1,14 +1,13 @@
 ## Shortcut expansion and clean build. `replaceShortcuts` rewrites bare `show:file` (to an image link or empty `show:` block) and consumes `:clean` / `:run*` lines, scanning only the prose gaps between cells; `clearAllFiles` is the `:clean` handler. A bare non-image `show:file` becomes an empty `show:` block filled later by `runCells` (streamed through its trim window).
-import std/random
 type ShortcutKind = enum skShow, skClean, skRunAll, skRunAbove, skRunBelow
 proc replaceShortcuts(md: var MarkdownFile) =
   var pos: tuple[first, last: int]
   var endPrevChunk, startNextChunk = 0
   var matches = newSeq[string](1)
   # use the html version for now as we explore how to force a cache update of the md viewer
-  #let (showimg, clean) = ("![$1]($1)\n", "")
-  randomize()
-  let (showimg, clean) = ("<img src=\"$1\" width=100% alt=\"" & $rand(1000) & "\">\n", "")
+  let (showimg, clean) = ("![$1]($1)\n", "")
+  ## here is the html version
+  #let (showimg, clean) = ("<img src=\"$1\" width=100%>\n", "")
   # Tier 4: `:run*` lines collapse to "" (removed) like `:clean`, but set runMode + a cell-index boundary. A ShortcutKind tag is carried because PEG objects have no usable `==`.
   let rules = [(skShow, bareShowPattern, showimg), (skClean, cleanPattern, clean),
                (skRunAll, runAllPattern, clean), (skRunAbove, runAbovePattern, clean),
