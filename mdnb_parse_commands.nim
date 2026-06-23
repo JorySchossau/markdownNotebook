@@ -81,4 +81,8 @@ proc parseCellCommands(matches: seq[string]; md: MarkdownFile): tuple[props: Cel
           except ValueError:
             stderr.writeLine &"Skipping cell: 'trim' count expects a positive integer, got '{parts[1]}'"
             result.invalid = true
+    of "parallel":
+      # `parallel` modifier (bare word, no arg): this cell is launched but not waited on in the sequential run modes. No-op in the default async save path (already concurrent). Marked `code` so a `parallel`-only cell on a registered language still runs for its side effects.
+      result.props.code = true
+      result.props.parallel = true
     else: discard

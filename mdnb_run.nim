@@ -1,4 +1,4 @@
-## Execution: build the shell command for a cell and run the dirty ones. Runs are non-blocking (Tier 2): launched via `osproc.startProcess`, reaped on a later watch cycle via `pollRuns`, with `[s/r/x/k]` state for manual control, per-cell `timeout:` (Tier 2), and per-cycle pipe draining (Tier 2) so output > the ~64KB OS pipe buffer can't block the producer (agents.md §8/§12).
+## Execution: build the shell command for a cell and run the dirty ones. Runs are non-blocking (Tier 2): launched via `osproc.startProcess`, reaped on a later watch cycle via `pollRuns`, with the two-field `[T](S)` control for manual control, per-cell `timeout:` (Tier 2), and per-cycle pipe draining (Tier 2) so output > the ~64KB OS pipe buffer can't block the producer (agents.md §8/§12). The `parallel` modifier (Tier 5) opts a cell out of being waited on between launches in the sequential bulk-run path only (`runCellsSequential`); the default async `runCells` already overlaps cells.
 
 proc buildCommand(command, sourceFilename: string): string =
   ## If `command` has `$1`, replace each with `sourceFilename` minus extension (compiled-language form `g++ -o $1.out $1.cpp`); else append the source filename.
@@ -286,7 +286,7 @@ proc sweepEphemeralCache(md: var MarkdownFile) =
     tryRemoveFile(path)
 
 proc runCells(md: var MarkdownFile) =
-  ## Launch every cell that should run this pass (`[x]`-forced) and reap any finished since last cycle. Non-blocking: long cells stay in `running` and are reaped later. Non-runnable `show:` cells with an existing file read it back in (streamed through their trim window).
+  ## Launch every cell that should run this pass (`[x]`-forced) and reap any finished since last cycle. Non-blocking: long cells stay in `running` and are reaped later. Non-runnable `show:` cells with an existing file read it back in (streamed through their trim window). `parallel` is a no-op here — the default save path already launches all eligible cells in one pass in document order, so they overlap whether or not they are marked `parallel`; `parallel` only changes behavior in `runCellsSequential` (the blocking `:runall`/`:runabove`/`:runbelow`/`-o` path).
   createDir "temp"
   md.sweepEphemeralCache
   md.pollRuns
@@ -305,55 +305,63 @@ proc runCells(md: var MarkdownFile) =
           md.writeIntoCell(i, shown)
           md.write
 
-proc reapThis(md: var MarkdownFile; sourceFile: string; timeoutSecs: int; started: Time) =
-  ## Block until the running cell identified by `sourceFile` is reaped, honoring its `timeout:` and `[k]`. Used by `runCellsSequential` so each cell fully completes before the next starts (visible x->r->s). Mirrors the watch loop's reap path: drain each spin, kill on timeout, call `reapFinished`.
-  let deadline = started + initDuration(seconds = timeoutSecs)
+proc dependenciesSatisfied(md: MarkdownFile; cell: Cell): bool =
+  ## True if no currently-running cell (for this file) produces a file this cell declares as an `inputs:`. Used only by the sequential bulk-run path so a consumer doesn't launch while a still-running `parallel` producer is mid-write — by the time we evaluate cell N, every non-parallel producer among earlier cells was already fully waited on, so the only producers still in flight are `parallel` ones. (The default async `runCells` path needs no such gate: it never blocks between launches.)
+  if cell.properties.inputs.len == 0: return true
+  for input in cell.properties.inputs:
+    for r in running:
+      if r.filename == md.filename and r.outputFile == input:
+        return false
+  true
+
+proc waitForCell(md: var MarkdownFile; sourceFile: string) =
+  ## Block until the running cell identified by `sourceFile` is reaped, reaping any other finished cells for this file along the way (so `parallel` stragglers are drained and their per-cell `timeout:` honored). Used by the sequential bulk-run path. Each spin calls `pollRuns` (which honors `[k]`, `timeout:`, and reaps finished cells for this file), then checks whether our target is still in flight; a target already reaped on a prior spin returns immediately.
   while true:
-    var idx = -1
-    for j, r in running:
-      if r.filename == md.filename and r.sourceFile == sourceFile: idx = j; break
-    if idx == -1: return   # no longer in `running` -> already reaped elsewhere
-    # Honor a user-typed `[k]` on this cell between spins (parse current file).
-    let killRequested = block:
-      var kr = false
-      for c in md.cells:
-        if c.properties.code and c.properties.source == sourceFile and c.properties.state == 'k':
-          kr = true; break
-      kr
-    if killRequested:
-      osproc.kill(running[idx].p)
-      let ec = running[idx].p.peekExitCode
-      running[idx].p.close
-      running[idx].logRunStatus(ec, note = "killed ([k])")
-      running.delete idx
-      # flip run-state k -> s; trigger unchanged (a user kill doesn't clear `o` or undo sticky `x`).
-      md.settleRun(sourceFile, clearOnce = false)
-      return
-    if getTime() >= deadline:
-      md.reapTimeout(running[idx])
-      running.delete idx
-      return
-    if running[idx].p.peekExitCode != -1:
-      md.reapFinished(running[idx])
-      running.delete idx
-      return
+    var stillRunning = false
+    for r in running:
+      if r.filename == md.filename and r.sourceFile == sourceFile:
+        stillRunning = true; break
+    if not stillRunning: return
+    md.pollRuns
+    sleep(50)
+
+proc waitForParallel(md: var MarkdownFile; pending: seq[string]) =
+  ## Final barrier: block until every `pending` parallel source is reaped. Each spin reaps all finished cells for this file (honoring `timeout:`). Empty `pending` is a no-op. The pending set is a list of source files; a source no longer in `running` is done.
+  if pending.len == 0: return
+  while true:
+    var any = false
+    for sf in pending:
+      for r in running:
+        if r.filename == md.filename and r.sourceFile == sf:
+          any = true; break
+      if any: break
+    if not any: return
+    md.pollRuns
     sleep(50)
 
 proc runCellsSequential(md: var MarkdownFile; selectedIdx: seq[int]) =
-  ## Tier 4 bulk-run core: run `selectedIdx` one at a time, fully completing each (s->r->s, output written, show cell filled) before the next. Launches via `startRun` (which flips the run-state to `r`) and synchronously reaps via `reapThis`. The trigger is left untouched: a sticky `[x]` keeps its trigger; `-o`/`:runall` run regardless of trigger because they call this directly rather than through `cellShouldRun`. Deliberately BLOCKS the watcher — ordering and per-cell file updates are the point and aren't possible with the non-blocking path. Dependencies (`inputs:`/`output:`) apply: `markDirtyCells` already ran.
+  ## Tier 4 bulk-run core: run `selectedIdx` one at a time in document order, fully completing each before the next — UNLESS a cell is marked `parallel`, in which case it is launched but NOT waited on (tracked for the final barrier), so consecutive `parallel` cells overlap. A cell whose `inputs:` are still being produced by a running `parallel` cell waits for that producer first (`dependenciesSatisfied`). Launches via `startRun` (s->r); non-`parallel` cells are awaited via `waitForCell` (s->r->s, output written, show cell filled). After all launches, `waitForParallel` blocks until every `parallel` cell has landed. Deliberately BLOCKS the watcher — ordering and per-cell file updates are the point and aren't possible with the non-blocking path. (`parallel` is a no-op in the default async save path, which already overlaps cells.) Dependencies (`inputs:`/`output:`) apply: `markDirtyCells` already ran.
   createDir "temp"
   md.sweepEphemeralCache
   md.pollRuns
+  var pendingParallel: seq[string] = @[]
   for idx in selectedIdx:
     # Skip a cell already running (launched on a prior pass) — forcing a second launch would collide on the same source file.
     if idx < 0 or idx >= md.cells.len: continue
     if not md.cells[idx].properties.code: continue
     if md.cells[idx].properties.state == 'r': continue
-    let secs = md.cells[idx].properties.timeout
+    # Dependency gate: if a still-running `parallel` producer is mid-writing a file this cell consumes, wait for it first.
+    while not md.dependenciesSatisfied(md.cells[idx]):
+      md.pollRuns
+      sleep(50)
     md.startRun(idx)             # s -> r, writes the `[T](r)` control
     md.write                     # `[T](r)` visible before we block on the reap
-    md.reapThis(md.cells[idx].properties.source, secs,
-                if running.len > 0: running[^1].started else: getTime())
+    if md.cells[idx].properties.parallel:
+      pendingParallel.add(md.cells[idx].properties.source)
+    else:
+      md.waitForCell(md.cells[idx].properties.source)
+  # Final barrier: wait for every `parallel` cell launched this pass to land so its output is on disk before show cells refresh.
+  md.waitForParallel(pendingParallel)
   # Refresh show cells whose files now exist but weren't a just-run producer (e.g. a show cell below all run cells displaying a pre-existing file).
   for i, cell in md.cells:
     if not cell.properties.code and cell.properties.show.len > 0:

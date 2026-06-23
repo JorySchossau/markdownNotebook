@@ -18,6 +18,7 @@ type CellProperties = object
   # Two-field control `[T](S)` after the language id. `trigger` T: '\0'=absent, ' '=do-nothing, 'x'=run on every save (sticky), 'o'=run once. `state` S: '\0'=absent, 's'=stopped, 'r'=running, 'k'=kill. A cell runs this pass iff trigger∈{x,o} AND state=='s'. See agents.md §7.
   trigger: char
   state: char
+  parallel: bool   ## `parallel` modifier: in the sequential run modes (`:runall`/`:runabove`/`:runbelow`/`-o`) this cell is launched but NOT waited on before the next cell launches; only the final barrier waits for it. No-op in the default async save path (already concurrent).
 
 type Cell = object
   id: int
@@ -56,6 +57,7 @@ proc cellSignature(props: CellProperties): string =
   if props.inputs.len > 0: parts.add "inputs=" & props.inputs.join(",")
   parts.add "timeout=" & $props.timeout
   parts.add "trim=" & (if props.trimTail: "tail," else: "head,") & $props.trimLines
+  if props.parallel: parts.add "parallel=true"
   parts.join("|")
 
 ## ==============
