@@ -31,84 +31,8 @@ proc processBodyForCells(md: var MarkdownFile) =
     for match in matches.mitems: match = ""
     pos = buf[].findBounds(chunkPattern, matches, start = pos.last + 1)
     if pos.first == -1: break
-    var props: CellProperties
     let cellid = md.cells.len + 1
-    var invalid = false
-    for i, match in matches:
-      if i == 0: continue
-      if match.len == 0: break
-      if i == 1 and (match in md.runtimes or match == "raw"):
-        props.language = match
-      # `[ ]` state field: `[`+one of s/r/x/k+`]`. An unrecognized bracketed token means a mistype -> skip the cell.
-      if match.len == 3 and match[0] == '[' and match[2] == ']':
-        let st = match[1]
-        if st in "srxk": props.state = st
-        else:
-          echo &"Skipping cell: invalid state '{st}' (expected s/r/x/k)"
-          invalid = true
-        continue
-      let command = match.split(':')
-      case command[0]
-      of "source":
-        if props.isAppend:
-          echo "Skipping cell: 'source:' and 'append:' are mutually exclusive"
-          invalid = true
-        else:
-          props.code = true
-          if command.len == 2: props.source = command[1]
-      of "append":
-        if props.source.len > 0:
-          echo "Skipping cell: 'source:' and 'append:' are mutually exclusive"
-          invalid = true
-        elif command.len != 2:
-          echo "Skipping cell: argument required: 'append:filename'"
-          invalid = true
-        else:
-          props.code = true
-          props.isAppend = true
-          props.source = command[1]
-      of "output", "show", "inputs":
-        # Guard the arg access behind `else` (mirroring `append`): a bare `output`/`show`/`inputs` with no `:arg` has len 1, so `command[1]` would IndexDefect without this branch.
-        if command.len != 2:
-          echo "Skipping cell: argument required: 'command:argument'"
-          invalid = true
-        else:
-          case command[0]
-          of "output":
-            props.code = true
-            props.output = command[1]
-          of "show": props.show = command[1]
-          of "inputs": props.inputs = command[1].split(',')
-          else: discard
-      of "timeout":
-        if command.len != 2:
-          echo "Skipping cell: argument required: 'timeout:N' (seconds)"
-          invalid = true
-        else:
-          try: props.timeout = parseInt(command[1])
-          except ValueError:
-            echo &"Skipping cell: 'timeout:N' expects an integer, got '{command[1]}'"
-            invalid = true
-      of "trim":
-        # `trim:head,N` / `trim:tail,N` (comma-separated, no spaces) — parses under the existing `word ':' word` grammar like `inputs:a,b,c`.
-        if command.len != 2:
-          echo "Skipping cell: argument required: 'trim:head,N' / 'trim:tail,N'"
-          invalid = true
-        else:
-          let parts = command[1].split(',')
-          if parts.len != 2 or parts[0] notin ["head", "tail"]:
-            echo &"Skipping cell: 'trim' wants head,N or tail,N, got '{command[1]}'"
-            invalid = true
-          else:
-            try:
-              let n = parseInt(parts[1])
-              if n <= 0: raise newException(ValueError, "non-positive")
-              props.trimTail = parts[0] == "tail"
-              props.trimLines = n
-            except ValueError:
-              echo &"Skipping cell: 'trim' count expects a positive integer, got '{parts[1]}'"
-              invalid = true
-      else: discard
+    var (props, invalid) = parseCellCommands(matches, md)
     # Resolve optional defaults so the execution layer can read them unconditionally.
     if props.timeout == 0: props.timeout = defaultTimeout
     if props.trimLines == 0: props.trimLines = defaultTrimLines

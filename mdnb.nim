@@ -4,6 +4,7 @@ import std/[strutils, sequtils, pegs, tables, sets, os, strformat, osproc, times
 include mdnb_grammar
 include mdnb_types
 include mdnb_io
+include mdnb_parse_commands
 include mdnb_parse
 include mdnb_shortcuts
 include mdnb_run
