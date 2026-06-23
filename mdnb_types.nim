@@ -15,7 +15,9 @@ type CellProperties = object
   timeout: int   ## `timeout:N` in seconds; defaults to `defaultTimeout`.
   trimTail: bool   ## `trim:tail,N` (true) vs `trim:head,N` (false, the default).
   trimLines: int   ## `trim:head,N` / `trim:tail,N` line count; defaults to `defaultTrimLines`.
-  state: char   ## `[ ]` field: '\0'=absent (stopped by default), 's'=stopped, 'r'=running, 'x'=execute, 'k'=kill.
+  # Two-field control `[T](S)` after the language id. `trigger` T: '\0'=absent, ' '=do-nothing, 'x'=run on every save (sticky), 'o'=run once. `state` S: '\0'=absent, 's'=stopped, 'r'=running, 'k'=kill. A cell runs this pass iff trigger∈{x,o} AND state=='s'. See agents.md §7.
+  trigger: char
+  state: char
 
 type Cell = object
   id: int

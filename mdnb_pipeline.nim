@@ -60,7 +60,7 @@ proc showWaitMessages(md: var MarkdownFile) =
   md.write
 
 proc cellInfoLineRange(md: MarkdownFile; idx: int): HSlice[int, int] =
-  ## Byte range of the info-string line (the fence opener) for cell `idx`; shared back-scan logic used by `injectStoppedState` and `writeCellState`.
+  ## Byte range of the info-string line (the fence opener) for cell `idx`; shared back-scan logic used by `injectDefaultStateField` and `writeStateField`.
   let cell = md.cells[idx]
   var lineStart = cell.rng.a - 1
   if lineStart > 0 and md.buf[][lineStart] == '\n': dec lineStart  # skip the line-terminating \n
@@ -68,23 +68,32 @@ proc cellInfoLineRange(md: MarkdownFile; idx: int): HSlice[int, int] =
   let lineEnd = cell.rng.a - 1            # the \n ending the info line (exclusive below)
   lineStart ..< lineEnd
 
-proc injectStoppedState(md: var MarkdownFile) =
-  ## Tier 4 stopped-by-default: splice ` [s]` right after the language id in every runnable cell that has no `[ ]` field, so the notebook is inert until the user asks it to run. Idempotent; each splice patches downstream offsets via `updatePositionsByOffset`.
+proc injectDefaultStateField(md: var MarkdownFile) =
+  ## Ensure every runnable cell (a cell whose language is registered in the frontmatter `code:` runtimes) carries the two-field `[T](S)` control right after its language id. Two cases per cell:
+  ##  - no control at all: splice ` [x](s)` — the common first-save case. `x` is sticky (run on every save), so a freshly-saved registered-language cell runs immediately and keeps running on each subsequent save until the user blanks the trigger. (A plain codefence whose language is NOT registered has `props.code == false`, so it is skipped here — no injection, it stays inert.)
+  ##  - a shorthand `[](S)` (empty brackets, no trigger char): canonicalize to `[ ](S)` so the blank trigger the user typed is explicit (this is a user- authored do-nothing, not a fresh cell, so it is NOT promoted to `x`).
+  ## A full `[T](S)` control is left untouched. Each splice/canonicalize patches downstream offsets via `updatePositionsByOffset`.
   var changed = false
   for i in 0 ..< md.cells.len:
     let cell = md.cells[i]
-    if not cell.properties.code: continue
+    if not cell.properties.code: continue   # plain codefence (unregistered language): no injection
     let lineRange = md.cellInfoLineRange(i)
     let line = md.buf[][lineRange]
-    # Skip if the line already has a `[ ]` field anywhere.
-    var k = 0
-    var hasField = false
-    while k < line.len:
-      if line[k] == '[':
-        if k + 2 < line.len and line[k + 2] == ']': hasField = true; break
-      inc k
-    if hasField: continue
-    # Locate the fence marker and the end of the language id following it.
+    # Find the first `[` on the info line and the `]` that closes it, then check whether `(...)` follows — that is the `[T](S)` control. The PEG already validated any present control's content, so here we only care about shape: present+canonical (leave), present+shorthand `[](S)` (canonicalize to blank), or absent (inject `[x](s)`).
+    var bracket = -1
+    var closeB = -1
+    for k in 0 ..< line.len:
+      if line[k] == '[' and bracket == -1: bracket = k
+      elif bracket != -1 and line[k] == ']': closeB = k; break
+    if bracket != -1 and closeB != -1 and closeB + 1 < line.len and line[closeB + 1] == '(':
+      # A `[...](...)` control is present. Only the shorthand `[](S)` (empty brackets, `bracket+1 == closeB`) needs canonicalizing to `[ ](S)`; any `[T](S)` is already canonical.
+      if closeB - bracket == 1:   # `[]`: no trigger char between the brackets
+        let spliceAt = lineRange.a + bracket + 1
+        md.buf[] = md.buf[][0 ..< spliceAt] & " " & md.buf[][spliceAt .. ^1]
+        md.updatePositionsByOffset(i, 1)
+        changed = true
+      continue
+    # No `[T](S)` control: splice ` [x](s)` right after the language id (sticky `x` so a fresh registered-language cell runs on every save).
     var p = 0
     while p < line.len and line[p] in {' ', '\t'}: inc p            # leading ws (rare)
     if p < line.len and line[p] == '`':
@@ -98,10 +107,12 @@ proc injectStoppedState(md: var MarkdownFile) =
     while p < line.len and line[p] notin {' ', '\t'}: inc p         # the language id
     let langEnd = p                                                 # one past the id
     if langEnd == langStart: continue                               # no language id
-    # Splice ` [s]` before this cell's body, so this cell AND every later one shifts by 4 bytes; pass `i` (not cell.id) to include the current cell.
+    # Splice ` [x](s)` before this cell's body, so this cell AND every later one shifts by 7 bytes; pass `i` (not cell.id) to include the current cell. Also set the in-memory trigger/state so `cellShouldRun` (run later this same `process` pass) sees the freshly-injected `x` and runs the cell.
     let spliceAt = lineRange.a + langEnd
-    md.buf[] = md.buf[][0 ..< spliceAt] & " [s]" & md.buf[][spliceAt .. ^1]
-    md.updatePositionsByOffset(i, 4)
+    md.buf[] = md.buf[][0 ..< spliceAt] & " [x](s)" & md.buf[][spliceAt .. ^1]
+    md.updatePositionsByOffset(i, 7)
+    md.cells[i].properties.trigger = 'x'
+    md.cells[i].properties.state = 's'
     changed = true
   if changed: md.write
 
@@ -141,7 +152,7 @@ proc process(md: var MarkdownFile) =
   if md.cleanBuild:
     md.clearAllFiles
     md.cleanBuild = false
-  md.injectStoppedState   # Tier 4: runnable cells get `[s]` if they lack a `[ ]` field
+  md.injectDefaultStateField   # runnable cells get `[ ](s)` if they lack a `[T](S)` control
   md.collateSources
   md.markDirtyCells
   md.showWaitMessages

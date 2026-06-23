@@ -38,20 +38,49 @@ proc anyRunning(filename: string): bool =
     if r.filename == filename: return true
   false
 
-proc writeCellState(md: var MarkdownFile; idx: int; newState: char) =
-  ## 1-for-1 swap of the state char in this cell's `[x]` field (no offset patching needed); no-op if the cell has no `[ ]` field.
-  if newState == '\0': return
+proc writeStateField(md: var MarkdownFile; idx: int) =
+  ## Rewrite this cell's `[T](S)` control to match `props.trigger`/`props.state` (the canonical 6-char form `[`+T+`]`+`(`+S+`)`, T a literal space when blank). Robust to the shorthand `[](S)` and to a missing field (the reap-only watch-loop branch in mdnb_cli.nim skips `injectDefaultStateField`, so a freshly-reparsed `md` may carry either): locates the first `[...]` on the info line, writes the canonical token in its place, and offset-patches downstream cells on any length delta. No-op if no `[` is found and the caller hasn't asked to inject (callers that need a field always run `injectDefaultStateField` first via the full `process` path).
   let cell = md.cells[idx]
-  # Scan back from the cell body to the info line, take its last `[` as the `[x]` field (don't break on `]` — scanning backwards hits the close bracket first).
+  let trig = md.cells[idx].properties.trigger
+  let st = md.cells[idx].properties.state
+  if trig == '\0' and st == '\0': return   # nothing to say; leave the line as-is
+  let canon = "[" & (if trig == '\0': ' ' else: trig) & "](" &
+              (if st == '\0': 's' else: st) & ")"
+  # Scan back from the cell body to the info line, take its first `[` as the control.
+  var lineStart = cell.rng.a - 1
+  if lineStart > 0 and md.buf[][lineStart] == '\n': dec lineStart
+  while lineStart > 0 and md.buf[][lineStart - 1] != '\n': dec lineStart
   var bracket = -1
-  var i = cell.rng.a - 2
-  while i >= 0 and md.buf[][i] != '\n':
-    if md.buf[][i] == '[': bracket = i
-    dec i
-  if bracket == -1 or bracket + 2 >= md.buf[].len or md.buf[][bracket + 2] != ']':
-    return # no `[ ]` field present on this cell
-  md.buf[][bracket + 1] = newState
+  var i = lineStart
+  while i < cell.rng.a and i < md.buf[].len:
+    if md.buf[][i] == '[': bracket = i; break
+    inc i
+  if bracket == -1: return   # no field present; nothing to rewrite
+  # Measure the existing token so we can replace the whole span `[...](...)` (and stay correct if it's the shorthand).
+  var close = bracket + 1
+  while close < md.buf[].len and md.buf[][close] != ']': inc close
+  if close >= md.buf[].len: return
+  var paren = close + 1
+  if paren >= md.buf[].len or md.buf[][paren] != '(': return   # not a `[T](S)` control
+  var pclose = paren + 1
+  while pclose < md.buf[].len and md.buf[][pclose] != ')': inc pclose
+  if pclose >= md.buf[].len: return
+  let oldSpan = md.buf[][bracket .. pclose]
+  if oldSpan == canon: return   # already matches; avoid a needless write
+  md.buf[] = md.buf[][0 ..< bracket] & canon & md.buf[][pclose + 1 .. ^1]
+  let delta = canon.len - oldSpan.len
+  if delta != 0: md.updatePositionsByOffset(cell.id, delta)
   md.write
+
+proc settleRun(md: var MarkdownFile; sourceFile: string; clearOnce: bool) =
+  ## After a run ends (finished, timed out, or killed), find the cell producing `sourceFile` whose run-state is `r`, flip it to `s`, and write the `[T](s)` control back to disk. When `clearOnce` is true (normal completion in `reapFinished`) and the trigger was `o` (run-once), clear the trigger to blank so the cell does not run again on the next save. Called from every reap path so the in-memory `md.cells` state stays synced with disk for callers that reuse one `md` across runs (the sequential bulk-run path). No-op if no matching `r` cell is found.
+  for i, c in md.cells:
+    if c.properties.code and c.properties.source == sourceFile and c.properties.state == 'r':
+      md.cells[i].properties.state = 's'
+      if clearOnce and md.cells[i].properties.trigger == 'o':
+        md.cells[i].properties.trigger = ' '
+      md.writeStateField(i)
+      break
 
 proc showCellForOutput(md: MarkdownFile; outputFile: string): int =
   ## Index of the `show:` cell displaying `outputFile`, or -1 if none.
@@ -68,15 +97,12 @@ proc cellWithSource(md: MarkdownFile; sourceFile: string): CellProperties =
   CellProperties(trimLines: defaultTrimLines)
 
 proc cellShouldRun(cell: Cell): bool =
-  ## Tier 4 stopped-by-default: only `x` runs; absent/`s`/`r`/`k` do not. (`-o` bypasses this by setting `runMode = rmAll`, so `runBulk` forces `[x]` itself via `runCellsSequential`.)
+  ## A cell runs this pass iff it is code, has a run trigger (`x` run-on-save or `o` run-once), and is currently stopped (`s`). A running (`r`) or kill-requested (`k`) cell does not run, even with a trigger set — e.g. `[x](r)` on save is a no-op until the run settles back to `s`. (`-o` and `:runall`/`:runabove`/`:runbelow` bypass this by forcing a launch via `runCellsSequential`, which calls `startRun` directly.)
   if not cell.properties.code: return false
-  case cell.properties.state
-  of 'x': return true                    # execute: force-run regardless of dirty
-  of 's', 'r', 'k': return false         # stopped / running / kill-requested
-  else: return false                     # '\0' (no field): stopped by default now
+  cell.properties.trigger in {'x', 'o'} and cell.properties.state == 's'
 
 proc startRun(md: var MarkdownFile; idx: int) =
-  ## Launch one cell's process without blocking: write the source, start the subprocess (or write output directly for `raw`), record it in `running`, flip state `x`->`r`. Persists the command signature sidecar for non-ephemeral cells so a later `markDirtyCells` detects command edits.
+  ## Launch one cell's process without blocking: write the source, start the subprocess (or write output directly for `raw`), record it in `running`, flip run-state s->r (and write the `[T](r)` control). Persists the command signature sidecar for non-ephemeral cells so a later `markDirtyCells` detects command edits. The trigger is left untouched here (x stays sticky; o is cleared to blank on completion in `reapFinished`).
   let cell = md.cells[idx]
   let sourceFile = cell.properties.source
   let outputFile = cell.properties.output
@@ -101,9 +127,8 @@ proc startRun(md: var MarkdownFile; idx: int) =
                       cellId: cell.id, command: command)
   if verbose:
     echo &"[mdnb] {md.filename} cell {cell.id}: launched '{command}' (timeout {secs}s)"
-  if cell.properties.state == 'x':
-    md.cells[idx].properties.state = 'r'  # keep in-memory state synced with the file so a caller holding this `md` across runs (the Tier 4 sequential path) sees `r` and `reapFinished` can flip it to `s`.
-    md.writeCellState(idx, 'r')         # x -> r so the user sees it flipped
+  md.cells[idx].properties.state = 'r'   # s -> r; keep in-memory state synced with disk so a caller holding this `md` across runs (the sequential path) sees `r` and the reap path can flip it to `s`.
+  md.writeStateField(idx)                # write the `[T](r)` control so the user sees it flip
 
 const drainChunk = 8192   ## per-call read granularity; the loop stops at an empty pipe
 
@@ -163,14 +188,10 @@ proc reapFinished(md: var MarkdownFile; r: var Running) =
   r.drainOutput
   let exitCode = r.p.peekExitCode
   r.p.close
-  # Ephemeral bare-block cell: ran for side effects; no output/show cell to fill. The tmp source stays as a CACHE; editing the block changes its hash -> orphan (swept next run) -> missing -> dirty. Just report status and settle state, then refresh the image cache.
+  # Ephemeral bare-block cell: ran for side effects; no output/show cell to fill. The tmp source stays as a CACHE; editing the block changes its hash -> orphan (swept next run) -> missing -> dirty. Just report status and settle state (clearing an `o` trigger since the run completed), then refresh the image cache.
   if r.ephemeral:
     r.logRunStatus(exitCode)
-    for i, c in md.cells:
-      if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
-        md.cells[i].properties.state = 's'   # keep in-memory state synced with disk
-        md.writeCellState(i, 's')
-        break
+    md.settleRun(r.sourceFile, clearOnce = true)
     md.refreshImageCache
     return
   let raw = r.acc.strip
@@ -191,12 +212,8 @@ proc reapFinished(md: var MarkdownFile; r: var Running) =
     md.writeIntoCell(showIdx, if shown.len > 0: shown else: "(empty output)")
     md.write
   r.logRunStatus(exitCode)
-  # Flip the producing cell's state r -> s so the user sees it settled.
-  for i, c in md.cells:
-    if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
-      md.cells[i].properties.state = 's'   # keep in-memory state synced with disk
-      md.writeCellState(i, 's')
-      break
+  # Flip the producing cell's run-state r -> s and clear an `o` trigger (the run completed), so the user sees it settled.
+  md.settleRun(r.sourceFile, clearOnce = true)
   md.refreshImageCache
 
 proc reapTimeout(md: var MarkdownFile; r: Running) =
@@ -204,14 +221,10 @@ proc reapTimeout(md: var MarkdownFile; r: Running) =
   osproc.kill(r.p)
   let exitCode = r.p.peekExitCode
   r.p.close
-  # Ephemeral bare-block cell: no output/show to write a notice into. The tmp source stays as a cache (wiped by `:clean`). Just report status.
+  # Ephemeral bare-block cell: no output/show to write a notice into. The tmp source stays as a cache (wiped by `:clean`). Just report status and settle (a timeout-kill does NOT clear an `o` trigger — leave it so the user can re-trigger).
   if r.ephemeral:
     r.logRunStatus(exitCode, note = &"killed (timeout:{r.timeoutSecs}s)")
-    for i, c in md.cells:
-      if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
-        md.cells[i].properties.state = 's'   # keep in-memory state synced with disk
-        md.writeCellState(i, 's')
-        break
+    md.settleRun(r.sourceFile, clearOnce = false)
     return
   let notice = &"(mdnb killed this cell: exceeded timeout:{r.timeoutSecs}s)"
   r.outputFile.safeWriteFile(notice)
@@ -220,27 +233,23 @@ proc reapTimeout(md: var MarkdownFile; r: Running) =
     md.writeIntoCell(showIdx, notice)
     md.write
   r.logRunStatus(exitCode, note = &"killed (timeout:{r.timeoutSecs}s)")
-  for i, c in md.cells:
-    if c.properties.code and c.properties.source == r.sourceFile and c.properties.state == 'r':
-      md.cells[i].properties.state = 's'   # keep in-memory state synced with disk
-      md.writeCellState(i, 's')
-      break
+  md.settleRun(r.sourceFile, clearOnce = false)
 
 proc pollRuns(md: var MarkdownFile) =
   ## Reap finished/killed subprocesses for `md.filename` non-blockingly every watch cycle (independent of mtime), honoring `[k]`. Reaps are file-scoped so file A's slow cell never blocks file B's cells.
-  # First, honor kills: a cell now marked 'k' kills its running process.
+  # First, honor kills: a cell now marked `k` kills its running process.
   for i, cell in md.cells:
     if cell.properties.code and cell.properties.state == 'k':
       for j, r in running:
         if r.filename == md.filename and r.sourceFile == cell.properties.source:
-          # osproc.kill sends SIGKILL; reap the corpse, drop from `running`, flip state k->s on disk AND in memory so the launch pass below doesn't immediately relaunch.
+          # osproc.kill sends SIGKILL; reap the corpse, drop from `running`, flip run-state k->s on disk AND in memory so the launch pass below doesn't immediately relaunch. The trigger is left as-is (a user kill doesn't auto-clear an `o`; sticky `x` will re-run on the next save).
           osproc.kill(running[j].p)
           let exitCode = running[j].p.peekExitCode
           running[j].p.close
           running[j].logRunStatus(exitCode, note = "killed ([k])")
           running.delete j
           md.cells[i].properties.state = 's'
-          md.writeCellState(i, 's')
+          md.writeStateField(i)
           break
   # Then reap whatever finished on its own, or kill any past its timeout (this file only). Decide fate BEFORE draining: readData blocks on an empty-but-live pipe (returns 0 only at EOF), so draining a silent still-running cell would hang the watcher and a `[k]` could never land.
   let now = getTime()
@@ -317,12 +326,8 @@ proc reapThis(md: var MarkdownFile; sourceFile: string; timeoutSecs: int; starte
       running[idx].p.close
       running[idx].logRunStatus(ec, note = "killed ([k])")
       running.delete idx
-      # flip k -> s in the file
-      for i, c in md.cells:
-        if c.properties.code and c.properties.source == sourceFile:
-          md.cells[i].properties.state = 's'
-          md.writeCellState(i, 's')
-          break
+      # flip run-state k -> s; trigger unchanged (a user kill doesn't clear `o` or undo sticky `x`).
+      md.settleRun(sourceFile, clearOnce = false)
       return
     if getTime() >= deadline:
       md.reapTimeout(running[idx])
@@ -335,7 +340,7 @@ proc reapThis(md: var MarkdownFile; sourceFile: string; timeoutSecs: int; starte
     sleep(50)
 
 proc runCellsSequential(md: var MarkdownFile; selectedIdx: seq[int]) =
-  ## Tier 4 bulk-run core: run `selectedIdx` one at a time, fully completing each (x->r->s, output written, show cell filled) before the next. Forces each cell's state to `x` then launches via `startRun` and synchronously reaps via `reapThis`. Deliberately BLOCKS the watcher — ordering and per-cell file updates are the point and aren't possible with the non-blocking path. Dependencies (`inputs:`/`output:`) apply: `markDirtyCells` already ran.
+  ## Tier 4 bulk-run core: run `selectedIdx` one at a time, fully completing each (s->r->s, output written, show cell filled) before the next. Launches via `startRun` (which flips the run-state to `r`) and synchronously reaps via `reapThis`. The trigger is left untouched: a sticky `[x]` keeps its trigger; `-o`/`:runall` run regardless of trigger because they call this directly rather than through `cellShouldRun`. Deliberately BLOCKS the watcher — ordering and per-cell file updates are the point and aren't possible with the non-blocking path. Dependencies (`inputs:`/`output:`) apply: `markDirtyCells` already ran.
   createDir "temp"
   md.sweepEphemeralCache
   md.pollRuns
@@ -343,12 +348,10 @@ proc runCellsSequential(md: var MarkdownFile; selectedIdx: seq[int]) =
     # Skip a cell already running (launched on a prior pass) — forcing a second launch would collide on the same source file.
     if idx < 0 or idx >= md.cells.len: continue
     if not md.cells[idx].properties.code: continue
+    if md.cells[idx].properties.state == 'r': continue
     let secs = md.cells[idx].properties.timeout
-    # Force the run trigger: set state x in memory and splice into the file, then startRun flips it to r and launches.
-    md.cells[idx].properties.state = 'x'
-    md.writeCellState(idx, 'x')
-    md.startRun(idx)
-    md.write   # x -> r visible before we block on the reap
+    md.startRun(idx)             # s -> r, writes the `[T](r)` control
+    md.write                     # `[T](r)` visible before we block on the reap
     md.reapThis(md.cells[idx].properties.source, secs,
                 if running.len > 0: running[^1].started else: getTime())
   # Refresh show cells whose files now exist but weren't a just-run producer (e.g. a show cell below all run cells displaying a pre-existing file).

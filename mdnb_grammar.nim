@@ -35,8 +35,8 @@ let
     codefence <- "```" '`'* / "~~~" '~'*
     upTo3WS <- !\n \s? !\n \s? !\n \s?
     command <- stateField   /   word ':' quoted_string   /   word ':' word   /   word
-    stateField <- '[' statchar ']'
-    statchar <- [srxk]
+    # Loose shape match for the two-field `[T](S)` control (T∈{x,o,space}, S∈{r,s,k}); the content is validated in `parseCellCommands`, which emits a stderr error and skips the cell on any invalid content.
+    stateField <- '[' [^\]]* ']' '(' [^\)]* ')'
     quoted_string <- \" ( !\" .)+ \"
     word <- (\w / \/ / \\ / \. / \- / \,)+
     codefenceend <- \n upTo3WS $1 (!\n \s)* \n
