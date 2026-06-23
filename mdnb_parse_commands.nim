@@ -1,4 +1,4 @@
-## Cell command interpretation: turn info-string tokens (`source:`/`append:`/`output:`/`[T](S)`/`timeout:`/`trim:`…) into `CellProperties`. Extracted from `processBodyForCells` so the PEG scanner stays a positional concern and command parsing grows on its own (agents.md §8 recipe: add a `case` branch here). On any invalid command/state content, write a `Skipping cell:` notice to **stderr** and mark the cell invalid so `processBodyForCells` drops it (mdnb never crashes on a bad cell definition line).
+## Cell command interpretation: turn info-string tokens (`source:`/`append:`/`out:`/`[T](S)`/`timeout:`/`trim:`…) into `CellProperties`. Extracted from `processBodyForCells` so the PEG scanner stays a positional concern and command parsing grows on its own (agents.md §8 recipe: add a `case` branch here). On any invalid command/state content, write a `Skipping cell:` notice to **stderr** and mark the cell invalid so `processBodyForCells` drops it (mdnb never crashes on a bad cell definition line).
 proc parseCellCommands(matches: seq[string]; md: MarkdownFile): tuple[props: CellProperties, invalid: bool] =
   result.props = CellProperties()
   for i, match in matches:
@@ -40,18 +40,18 @@ proc parseCellCommands(matches: seq[string]; md: MarkdownFile): tuple[props: Cel
         result.props.code = true
         result.props.isAppend = true
         result.props.source = command[1]
-    of "output", "show", "inputs":
-      # Guard the arg access behind `else` (mirroring `append`): a bare `output`/`show`/`inputs` with no `:arg` has len 1, so `command[1]` would IndexDefect without this branch.
+    of "out", "show", "in":
+      # Guard the arg access behind `else` (mirroring `append`): a bare `out`/`show`/`in` with no `:arg` has len 1, so `command[1]` would IndexDefect without this branch.
       if command.len != 2:
         stderr.writeLine "Skipping cell: argument required: 'command:argument'"
         result.invalid = true
       else:
         case command[0]
-        of "output":
+        of "out":
           result.props.code = true
           result.props.output = command[1]
         of "show": result.props.show = command[1]
-        of "inputs": result.props.inputs = command[1].split(',')
+        of "in": result.props.inputs = command[1].split(',')
         else: discard
     of "timeout":
       if command.len != 2:
@@ -63,7 +63,7 @@ proc parseCellCommands(matches: seq[string]; md: MarkdownFile): tuple[props: Cel
           stderr.writeLine &"Skipping cell: 'timeout:N' expects an integer, got '{command[1]}'"
           result.invalid = true
     of "trim":
-      # `trim:head,N` / `trim:tail,N` (comma-separated, no spaces) — parses under the existing `word ':' word` grammar like `inputs:a,b,c`.
+      # `trim:head,N` / `trim:tail,N` (comma-separated, no spaces) — parses under the existing `word ':' word` grammar like `in:a,b,c`.
       if command.len != 2:
         stderr.writeLine "Skipping cell: argument required: 'trim:head,N' / 'trim:tail,N'"
         result.invalid = true

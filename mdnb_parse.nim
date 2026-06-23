@@ -44,7 +44,7 @@ proc processBodyForCells(md: var MarkdownFile) =
     if invalid: continue
     elif props.code and props.source.len == 0:
       props.source = "temp" / &"{splitFile(md.filename).name}_src{cellid}{md.runtimes[props.language].extension}"
-    # Ephemeral cells keep no output; other runnable cells without an explicit `output:` get the default txt path.
+    # Ephemeral cells keep no out; other runnable cells without an explicit `out:` get the default txt path.
     if props.code and not props.ephemeral and props.output.len == 0:
       props.output = "temp" / &"{splitFile(md.filename).name}_src{cellid}.txt"
     let contentStart = buf[].find(chars = {'\n'}, start = pos.first + 2)

@@ -12,7 +12,7 @@ proc safeWriteFile(filename, contents: string) =
       discard
 
 proc tryRemoveFile(filename: string) =
-  ## Remove a file if it exists, swallowing errors; used by `:clean` to wipe generated source/output files including ephemeral cache files.
+  ## Remove a file if it exists, swallowing errors; used by `:clean` to wipe generated source/out files including ephemeral cache files.
   try:
     if fileExists(filename): removeFile(filename)
   except CatchableError:

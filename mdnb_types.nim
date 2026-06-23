@@ -9,7 +9,7 @@ type CellProperties = object
   dirty: bool
   code: bool
   isAppend: bool
-  ephemeral: bool   ## bare-block cell: mdnb runs a content-hash-named tmp source for side effects; no `output:` kept; wiped by `:clean`.
+  ephemeral: bool   ## bare-block cell: mdnb runs a content-hash-named tmp source for side effects; no `out:` kept; wiped by `:clean`.
   inputs: seq[string]
   language, output, source, show: string   ## "" = absent (no such command given)
   timeout: int   ## `timeout:N` in seconds; defaults to `defaultTimeout`.
@@ -52,9 +52,9 @@ proc cellSignature(props: CellProperties): string =
   parts.add "lang=" & props.language
   if props.isAppend: parts.add "append=" & props.source
   elif props.source.len > 0: parts.add "source=" & props.source
-  if props.output.len > 0: parts.add "output=" & props.output
+  if props.output.len > 0: parts.add "out=" & props.output
   if props.show.len > 0: parts.add "show=" & props.show
-  if props.inputs.len > 0: parts.add "inputs=" & props.inputs.join(",")
+  if props.inputs.len > 0: parts.add "in=" & props.inputs.join(",")
   parts.add "timeout=" & $props.timeout
   parts.add "trim=" & (if props.trimTail: "tail," else: "head,") & $props.trimLines
   if props.parallel: parts.add "parallel=true"

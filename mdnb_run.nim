@@ -9,13 +9,13 @@ proc buildCommand(command, sourceFilename: string): string =
     command & ' ' & sourceFilename
 
 ## ==============
-## Non-blocking run state. Keyed by source file path (unique per cell). The watch loop rebuilds a fresh `MarkdownFile` per save, so a running cell can't hold a pointer to its origin `md`; we keep just enough to reap the process and write its output to the cell's `output:` path, locating the show cell in whichever `md` is current at reap time.
+## Non-blocking run state. Keyed by source file path (unique per cell). The watch loop rebuilds a fresh `MarkdownFile` per save, so a running cell can't hold a pointer to its origin `md`; we keep just enough to reap the process and write its output to the cell's `out:` path, locating the show cell in whichever `md` is current at reap time.
 type Running = object
   p: Process                 ## osproc handle; reaped non-blocking via peekExitCode
   filename: string           ## owning markdown file — reaps route back to its md
   language: string           ## runtime language id (for buildCommand lookup at start)
   sourceFile: string         ## the cell's source path — also our identity key
-  outputFile: string         ## the cell's output: path — where captured stdout goes
+  outputFile: string         ## the cell's out: path — where captured stdout goes
   ephemeral: bool            ## bare-block cell: cwd tmp source kept as a cache, no output kept
   started: Time              ## when the cell was launched — for the per-cell timeout
   timeoutSecs: int           ## resolved per-cell timeout in seconds (default 5)
@@ -184,7 +184,7 @@ proc readTrimmed(s: Stream; tail: bool; n: int): string =
 ## ==============
 
 proc reapFinished(md: var MarkdownFile; r: var Running) =
-  ## Read the finished process's stdout, write it in full to its `output:` file (untrimmed — the source of truth), write a trimmed view into any matching `show:` cell, flip state `r`->`s`. Non-zero exit (Tier 3): prepend an `(mdnb: cell exited with code N)` notice (stderr already merged via poStdErrToStdOut). The bulk was drained incrementally by `pollRuns`; drain the final tail here and read from `acc`.
+  ## Read the finished process's stdout, write it in full to its `out:` file (untrimmed — the source of truth), write a trimmed view into any matching `show:` cell, flip state `r`->`s`. Non-zero exit (Tier 3): prepend an `(mdnb: cell exited with code N)` notice (stderr already merged via poStdErrToStdOut). The bulk was drained incrementally by `pollRuns`; drain the final tail here and read from `acc`.
   r.drainOutput
   let exitCode = r.p.peekExitCode
   r.p.close
@@ -217,7 +217,7 @@ proc reapFinished(md: var MarkdownFile; r: var Running) =
   md.refreshImageCache
 
 proc reapTimeout(md: var MarkdownFile; r: Running) =
-  ## Kill a cell that exceeded its `timeout:` and write a notice (naming the limit) into both its `output:` file and any matching `show:` cell. Mirrors `reapFinished` but substitutes the notice for the captured output.
+  ## Kill a cell that exceeded its `timeout:` and write a notice (naming the limit) into both its `out:` file and any matching `show:` cell. Mirrors `reapFinished` but substitutes the notice for the captured output.
   osproc.kill(r.p)
   let exitCode = r.p.peekExitCode
   r.p.close
@@ -306,7 +306,7 @@ proc runCells(md: var MarkdownFile) =
           md.write
 
 proc dependenciesSatisfied(md: MarkdownFile; cell: Cell): bool =
-  ## True if no currently-running cell (for this file) produces a file this cell declares as an `inputs:`. Used only by the sequential bulk-run path so a consumer doesn't launch while a still-running `parallel` producer is mid-write — by the time we evaluate cell N, every non-parallel producer among earlier cells was already fully waited on, so the only producers still in flight are `parallel` ones. (The default async `runCells` path needs no such gate: it never blocks between launches.)
+  ## True if no currently-running cell (for this file) produces a file this cell declares as an `in:`. Used only by the sequential bulk-run path so a consumer doesn't launch while a still-running `parallel` producer is mid-write — by the time we evaluate cell N, every non-parallel producer among earlier cells was already fully waited on, so the only producers still in flight are `parallel` ones. (The default async `runCells` path needs no such gate: it never blocks between launches.)
   if cell.properties.inputs.len == 0: return true
   for input in cell.properties.inputs:
     for r in running:
@@ -340,7 +340,7 @@ proc waitForParallel(md: var MarkdownFile; pending: seq[string]) =
     sleep(50)
 
 proc runCellsSequential(md: var MarkdownFile; selectedIdx: seq[int]) =
-  ## Tier 4 bulk-run core: run `selectedIdx` one at a time in document order, fully completing each before the next — UNLESS a cell is marked `parallel`, in which case it is launched but NOT waited on (tracked for the final barrier), so consecutive `parallel` cells overlap. A cell whose `inputs:` are still being produced by a running `parallel` cell waits for that producer first (`dependenciesSatisfied`). Launches via `startRun` (s->r); non-`parallel` cells are awaited via `waitForCell` (s->r->s, output written, show cell filled). After all launches, `waitForParallel` blocks until every `parallel` cell has landed. Deliberately BLOCKS the watcher — ordering and per-cell file updates are the point and aren't possible with the non-blocking path. (`parallel` is a no-op in the default async save path, which already overlaps cells.) Dependencies (`inputs:`/`output:`) apply: `markDirtyCells` already ran.
+  ## Tier 4 bulk-run core: run `selectedIdx` one at a time in document order, fully completing each before the next — UNLESS a cell is marked `parallel`, in which case it is launched but NOT waited on (tracked for the final barrier), so consecutive `parallel` cells overlap. A cell whose `in:` are still being produced by a running `parallel` cell waits for that producer first (`dependenciesSatisfied`). Launches via `startRun` (s->r); non-`parallel` cells are awaited via `waitForCell` (s->r->s, output written, show cell filled). After all launches, `waitForParallel` blocks until every `parallel` cell has landed. Deliberately BLOCKS the watcher — ordering and per-cell file updates are the point and aren't possible with the non-blocking path. (`parallel` is a no-op in the default async save path, which already overlaps cells.) Dependencies (`in:`/`out:`) apply: `markDirtyCells` already ran.
   createDir "temp"
   md.sweepEphemeralCache
   md.pollRuns

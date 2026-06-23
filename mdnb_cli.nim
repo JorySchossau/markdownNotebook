@@ -50,7 +50,7 @@ proc main =
         var md = newMarkdownFile(filename)
         if not looping:
           md.cleanBuild = true
-          # Tier 4: `-o` is a clean build, so force every cell to run regardless of `[s]`, preserving run-once's full-output contract under stopped-by-default. Route through the SEQUENTIAL bulk path (`runMode = rmAll`) so producers finish before consumers — `-o` must behave like `:runall`, not a concurrent fan-out, or an `inputs:`/`output:` chain breaks.
+          # Tier 4: `-o` is a clean build, so force every cell to run regardless of `[s]`, preserving run-once's full-output contract under stopped-by-default. Route through the SEQUENTIAL bulk path (`runMode = rmAll`) so producers finish before consumers — `-o` must behave like `:runall`, not a concurrent fan-out, or an `in:`/`out:` chain breaks.
           md.runMode = rmAll
         md.process
         processedTimes[idx] = curTime

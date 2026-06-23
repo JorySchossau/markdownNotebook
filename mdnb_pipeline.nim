@@ -16,7 +16,7 @@ proc collateSources(md: var MarkdownFile) =
     md.cellsWritingToSource[source] = md.cellsWritingToSource.getOrDefault(source) + 1
 
 proc markDirtyCells(md: var MarkdownFile) =
-  ## Mark a code cell dirty if its source/output is missing, the regenerated source differs from disk, or its command signature differs from the sidecar; then propagate through the `inputs:`->`output:` dependency graph to a fixed point. (Over-approximating dirtiness is safe; a stale cell is the bug.) Ephemeral cells have no sidecar — their cache filename embeds the signature.
+  ## Mark a code cell dirty if its source/output is missing, the regenerated source differs from disk, or its command signature differs from the sidecar; then propagate through the `in:`->`out:` dependency graph to a fixed point. (Over-approximating dirtiness is safe; a stale cell is the bug.) Ephemeral cells have no sidecar — their cache filename embeds the signature.
   for i in 0 ..< md.cells.len:
     if not md.cells[i].properties.code: continue
     let source = md.cells[i].properties.source
@@ -30,12 +30,12 @@ proc markDirtyCells(md: var MarkdownFile) =
     elif not ephemeral and md.sourceSigs[source] != sigSidecar(source):
       # Command/config changed since last run (body identical). Absent sidecar (first run / after `:clean`) reads as "" -> dirty.
       md.cells[i].properties.dirty = true
-  # Producer index keyed by produced file (a cell produces its `output:` file).
+  # Producer index keyed by produced file (a cell produces its `out:` file).
   var producer: Table[string, int]
   for i, cell in md.cells:
     if cell.properties.code and cell.properties.output.len > 0:
       producer[cell.properties.output] = i
-  # Fixed-point propagation: a clean cell becomes dirty when a cell producing any of its `inputs:` is dirty.
+  # Fixed-point propagation: a clean cell becomes dirty when a cell producing any of its `in:` is dirty.
   var changed = true
   while changed:
     changed = false
