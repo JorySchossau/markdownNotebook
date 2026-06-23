@@ -1,17 +1,14 @@
-## Shortcut expansion and clean build. `replaceShortcuts` rewrites bare `show:file` (to an image link or empty `show:` block) and consumes `:clean` / `:run*` lines, scanning only the prose gaps between cells; `clearAllFiles` is the `:clean` handler. A bare non-image `show:file` becomes an empty `show:` block filled later by `runCells` (streamed through its trim window).
-type ShortcutKind = enum skShow, skClean, skRunAll, skRunAbove, skRunBelow
+## Shortcut expansion and clean build. `replaceShortcuts` rewrites bare `show:file` (to an image link or empty `show:` block) and `showhtml:file` (to an HTML img tag), and consumes `:clean` / `:run*` lines, scanning only the prose gaps between cells; `clearAllFiles` is the `:clean` handler. A bare non-image `show:file` becomes an empty `show:` block filled later by `runCells` (streamed through its trim window).
+type ShortcutKind = enum skShow, skShowHtml, skClean, skRunAll, skRunAbove, skRunBelow
 proc replaceShortcuts(md: var MarkdownFile) =
   var pos: tuple[first, last: int]
   var endPrevChunk, startNextChunk = 0
   var matches = newSeq[string](1)
-  # use the html version for now as we explore how to force a cache update of the md viewer
-  let (showimg, clean) = ("![$1]($1)\n", "")
-  ## here is the html version
-  #let (showimg, clean) = ("<img src=\"$1\" width=100%>\n", "")
+  let (showimg, showimgHtml, clean) = ("![$1]($1)\n", "<img src=\"$1\" width=100%>\n", "")
   # Tier 4: `:run*` lines collapse to "" (removed) like `:clean`, but set runMode + a cell-index boundary. A ShortcutKind tag is carried because PEG objects have no usable `==`.
-  let rules = [(skShow, bareShowPattern, showimg), (skClean, cleanPattern, clean),
-               (skRunAll, runAllPattern, clean), (skRunAbove, runAbovePattern, clean),
-               (skRunBelow, runBelowPattern, clean)]
+  let rules = [(skShow, bareShowPattern, showimg), (skShowHtml, bareShowHtmlPattern, showimgHtml),
+               (skClean, cleanPattern, clean), (skRunAll, runAllPattern, clean),
+               (skRunAbove, runAbovePattern, clean), (skRunBelow, runBelowPattern, clean)]
   for cell_i in 0 .. md.cells.len:
     startNextChunk = if cell_i == md.cells.len: md.buf[].len - 1
                      else: md.cells[cell_i].rng.a
@@ -23,11 +20,19 @@ proc replaceShortcuts(md: var MarkdownFile) =
         if pos.first == -1: break
         let fragpos = (endPrevChunk + pos.first + 1, endPrevChunk + pos.last)
         let newvalue =
-          if kind != skShow or splitFile(matches[0]).ext in imageExt:
-            replacement % matches
-          else:
+          if kind == skShowHtml:
+            # showhtml: always expands to HTML img tag (only for image files)
+            if splitFile(matches[0]).ext in imageExt:
+              replacement % matches
+            else:
+              # Non-image file: don't expand
+              md.buf[][fragpos[0] .. fragpos[1]]
+          elif kind == skShow and splitFile(matches[0]).ext notin imageExt:
             # Non-image bare `show:file`: emit an empty `show:` block `runCells` fills by streaming the file through its trim window.
             "```show:" & matches[0] & "\n```\n"
+          else:
+            # Image file with `show:`, or any other shortcut kind
+            replacement % matches
         let deltaOffset = newvalue.len - (fragpos[1] - fragpos[0]) - 1
         md.buf[] = md.buf[][0 .. fragpos[0] - 1] & newvalue & md.buf[][fragpos[1] + 1 .. ^1]
         pos = (pos.first, pos.first + newvalue.len)

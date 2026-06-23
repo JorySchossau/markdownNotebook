@@ -42,6 +42,7 @@ let
     codefenceend <- \n upTo3WS $1 (!\n \s)* \n
     """
   bareShowPattern = peg"""\n (!\n \s)* "show:" {(\w / '.' / '-' / ':' / '/' / '\\')*} (!\n \s)* \n"""
+  bareShowHtmlPattern = peg"""\n (!\n \s)* "showhtml:" {(\w / '.' / '-' / ':' / '/' / '\\')*} (!\n \s)* \n"""
   cleanPattern = peg"""\n ":clean" (!\n \s)* \n"""
   # Tier 4 global run commands (modeled on `cleanPattern`); `replaceShortcuts` removes the line and records its cell boundary + runMode.
   runAllPattern = peg"""\n ":runall" (!\n \s)* \n"""
