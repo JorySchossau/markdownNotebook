@@ -1,13 +1,4 @@
-## The data model: the four core types plus the buffer-mutation primitives that
-## splice text into a cell while patching every later cell's byte offset. See
-## agents.md §5 for the model overview and the `ref string` buffer rationale.
-##
-## Plain-old-data fields, not `Option[T]`: every value has a logical default, so
-## `nil` doesn't add meaning. The four string fields default to `""` and are
-## simply checked with `.len == 0` (a cell with no `output:` has an empty
-## `output`, etc.). `timeout` defaults to `defaultTimeout` seconds and is read
-## directly. This keeps the data model free of the unwrap/`some` ceremony that
-## `Option[T]` would force on every call site.
+## The data model: the four core types plus the buffer-mutation primitives (agents.md §5). Plain-old-data fields, not `Option[T]` (see "Do NOT Use" in agents.md): every value has a logical default.
 const defaultTimeout = 5      ## seconds; the `timeout:` a cell gets when it has none
 const defaultTrimLines = 50   ## the `trim:head,N` line count a cell gets when it has none
 
@@ -18,20 +9,13 @@ type CellProperties = object
   dirty: bool
   code: bool
   isAppend: bool
-  ephemeral: bool   ## bare-block cell (no `source:`/`append:`/`output:`): mdnb
-                    ## generates a tmp source in the current directory and runs
-                    ## it for its side effects. The tmp file is kept as a CACHE
-                    ## (content-hash in its name) so an unchanged block doesn't
-                    ## re-run; `:clean` wipes it. No `output:` is kept.
+  ephemeral: bool   ## bare-block cell: mdnb runs a content-hash-named tmp source for side effects; no `output:` kept; wiped by `:clean`.
   inputs: seq[string]
   language, output, source, show: string   ## "" = absent (no such command given)
   timeout: int   ## `timeout:N` in seconds; defaults to `defaultTimeout`.
   trimTail: bool   ## `trim:tail,N` (true) vs `trim:head,N` (false, the default).
   trimLines: int   ## `trim:head,N` / `trim:tail,N` line count; defaults to `defaultTrimLines`.
-  state: char   ## `[ ]` field after the lang/id in the info string (see §7/§12).
-               ## '\0' = absent: dirty-driven auto-run (today's behavior).
-               ## 's' = stopped (won't auto-run), 'r' = running (mdnb-set),
-               ## 'x' = execute (force run), 'k' = kill the running process.
+  state: char   ## `[ ]` field: '\0'=absent (stopped by default), 's'=stopped, 'r'=running, 'x'=execute, 'k'=kill.
 
 type Cell = object
   id: int
@@ -48,20 +32,10 @@ type MarkdownFile = object
   cells: seq[Cell]
   runtimes: Table[string, Runtime]
   sources: Table[string, string]
-  sourceSigs: Table[string, string]          ## per-source combined command signature (see
-                                             ## `cellSignature`); the command half of the
-                                             ## dirtiness check — body is the other half
+  sourceSigs: Table[string, string]   ## per-source combined command signature; the command half of the dirtiness check (body is the other).
   cellsWritingToSource: Table[string, int]
   cleanBuild: bool
-  # Tier 4 bulk-run commands: `:runall` / `:runabove` / `:runbelow` on their own
-  # line. `replaceShortcuts` removes the line and sets exactly one of these. The
-  # run step (after markDirtyCells) reads them, runs the selected cells in
-  # document order, and clears them. `runAll` is a plain flag (all cells);
-  # `runBoundaryAt` is the cell INDEX boundary the command fell in (the index of
-  # the first cell at or below the command line, captured before offsets shift),
-  # so `:runabove` selects cells with index < boundary and `:runbelow` selects
-  # cells with index >= boundary — robust to any offset changes after removal.
-  # `runMode` records which of above/below is intended. -1 / rmNone = not set.
+  # Tier 4 bulk-run scope set by `replaceShortcuts` (removes the line, records cell INDEX boundary + which mode). See agents.md §12 Tier 4.
   runMode*: RunMode
   runBoundaryAt*: int
 
@@ -70,19 +44,7 @@ type MarkdownFile = object
 proc content(md: MarkdownFile; cell: Cell): string = md.buf[][cell.rng]
 
 proc cellSignature(props: CellProperties): string =
-  ## A stable string capturing every user-authored facet of a cell — its language
-  ## id and ALL commands/arguments (source/append, output, inputs, timeout, trim) —
-  ## used for dirtiness hashing alongside the body. Changing any command/arg changes
-  ## this signature, which makes the cell dirty on the next save so it re-runs (the
-  ## fix for "I edited a command but the cell didn't re-run").
-  ##
-  ## Crucially EXCLUDES the `[s/r/x/k]` `state` field: mdnb flips that itself
-  ## (`x`→`r`→`s`) on every run, so including it would mark every just-run cell
-  ## dirty again and feedback-loop. The body is NOT part of the signature — it is
-  ## folded in separately at the call site (it lives in the buffer, not here) — so
-  ## the signature is purely the command/config half and the body is the other.
-  ## The derived flags `code`/`dirty`/`ephemeral` are excluded too (they are
-  ## consequences of the commands, not independent inputs).
+  ## Stable string over the language id and ALL commands/args (NOT body, NOT state); the command half of the dirtiness check (body is the other).
   var parts: seq[string] = @[]
   parts.add "lang=" & props.language
   if props.isAppend: parts.add "append=" & props.source

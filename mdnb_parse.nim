@@ -1,8 +1,4 @@
-## Parsing: turn the markdown buffer into cells. `processYamlHeader` reads the
-## `code:` runtimes from frontmatter; `processBodyForCells` PEG-scans fenced
-## blocks into `Cell`s, with a content-keyed cache so a byte-identical buffer
-## (an editor auto-save, or a no-op re-save of mdnb's own output) skips the scan.
-## See agents.md §4 / §6.
+## Parsing: `processYamlHeader` reads the `code:` runtimes; `processBodyForCells` PEG-scans fenced blocks into `Cell`s, with a content-keyed cache (agents.md §4/§6).
 proc processYamlHeader(md: var MarkdownFile) =
   if md.buf[].len > 3 and md.buf[][0 .. 2] == "---":
     var matches = newSeq[string](3)
@@ -15,11 +11,7 @@ proc processYamlHeader(md: var MarkdownFile) =
       if pos.first == -1: break
       md.runtimes[matches[0]] = Runtime(extension: matches[1], command: matches[2])
 
-## Position cache: maps file content -> parsed cells. The content itself is the
-## cache key, so a byte-identical buffer (e.g. an editor auto-save of mdnb's own
-## output, or a no-op re-save) hits the cache and skips the PEG scan entirely;
-## any real edit changes the key and falls back to a full re-parse. Entries hold
-## onto a copy of their key, so cap the size to keep memory bounded.
+## Position cache: file content -> parsed cells. Content is the key, so a byte-identical buffer hits the cache (skipping the scan) and any edit falls back to a full re-parse. Capped at 32 entries.
 const cellCacheMax = 32
 var cellCache: OrderedTable[string, seq[Cell]]
 
@@ -27,10 +19,7 @@ proc addCell(md: var MarkdownFile; rng: HSlice[int, int]; properties = CellPrope
   md.cells.add Cell(id: md.cells.len + 1, rng: rng, properties: properties)
 
 proc processBodyForCells(md: var MarkdownFile) =
-  ## Populate `md.cells` from the fenced code blocks in `md.buf`. Reuses cached
-  ## cell positions when the buffer is byte-identical to a previous parse (the
-  ## content itself is the cache key, so any edit invalidates automatically);
-  ## otherwise runs the full PEG scan and stores the result for next time.
+  ## Populate `md.cells` from fenced blocks, reusing cached positions when the buffer is byte-identical to a previous parse.
   if md.buf[] in cellCache:
     md.cells = cellCache[md.buf[]]
     return
@@ -50,10 +39,7 @@ proc processBodyForCells(md: var MarkdownFile) =
       if match.len == 0: break
       if i == 1 and (match in md.runtimes or match == "raw"):
         props.language = match
-      # `[ ]` state field: a single-char token wrapped in brackets (states
-      # s/r/x/k). The grammar only emits valid states (see stateField), so an
-      # unrecognized bracketed token means the user mistyped and the cell is
-      # skipped, matching how other malformed commands are handled.
+      # `[ ]` state field: `[`+one of s/r/x/k+`]`. An unrecognized bracketed token means a mistype -> skip the cell.
       if match.len == 3 and match[0] == '[' and match[2] == ']':
         let st = match[1]
         if st in "srxk": props.state = st
@@ -82,11 +68,7 @@ proc processBodyForCells(md: var MarkdownFile) =
           props.isAppend = true
           props.source = command[1]
       of "output", "show", "inputs":
-        # Guard the argument access behind `else` (mirroring the `append` branch
-        # above): when `command` has no `:argument` (len 1), mark invalid and
-        # SKIP the inner case — otherwise `command[1]` indexes out of bounds and
-        # crashes with IndexDefect (the bare `\`\`\`output` / `\`\`\`show` /
-        # `\`\`\`inputs` with no target).
+        # Guard the arg access behind `else` (mirroring `append`): a bare `output`/`show`/`inputs` with no `:arg` has len 1, so `command[1]` would IndexDefect without this branch.
         if command.len != 2:
           echo "Skipping cell: argument required: 'command:argument'"
           invalid = true
@@ -108,9 +90,7 @@ proc processBodyForCells(md: var MarkdownFile) =
             echo &"Skipping cell: 'timeout:N' expects an integer, got '{command[1]}'"
             invalid = true
       of "trim":
-        # `trim:head,N` / `trim:tail,N` — mode and line count are comma-separated
-        # (no spaces), so this parses under the existing `word ':' word` grammar
-        # just like `inputs:a,b,c`. The argument splits on ',' into [mode, count].
+        # `trim:head,N` / `trim:tail,N` (comma-separated, no spaces) — parses under the existing `word ':' word` grammar like `inputs:a,b,c`.
         if command.len != 2:
           echo "Skipping cell: argument required: 'trim:head,N' / 'trim:tail,N'"
           invalid = true
@@ -129,19 +109,10 @@ proc processBodyForCells(md: var MarkdownFile) =
               echo &"Skipping cell: 'trim' count expects a positive integer, got '{parts[1]}'"
               invalid = true
       else: discard
-    # `timeout:N` and `trim:` are optional; resolve their defaults for every cell
-    # up front so the execution layer can read them unconditionally.
+    # Resolve optional defaults so the execution layer can read them unconditionally.
     if props.timeout == 0: props.timeout = defaultTimeout
     if props.trimLines == 0: props.trimLines = defaultTrimLines
-    # A bare language-fence (recognized language, no `source:`/`append:`/`output:`
-    # command) is an ephemeral cell: mdnb generates a tmp source in the current
-    # directory and runs it for its side effects. No `output:` is kept — a bare
-    # block is "just run this", not "show me what it printed". The tmp file acts
-    # as a CACHE: it stays around between runs and is reused, so an unchanged
-    # bare block does not re-run (see markDirtyCells). Cache invalidation is
-    # baked into the filename: it embeds a short hash of the cell's *content*, so
-    # editing the block produces a new filename (old file left behind, harmless)
-    # and the new file is missing -> dirty -> runs. `:clean` wipes them all.
+    # A bare language-fence (registered language, no command) is an ephemeral cell: runs a content-hash-named tmp source for side effects; no output kept; cache in the filename (see markDirtyCells/sweepEphemeralCache).
     if not props.code and props.language.len > 0 and props.language in md.runtimes:
       props.code = true
       props.ephemeral = true
@@ -149,27 +120,14 @@ proc processBodyForCells(md: var MarkdownFile) =
     if invalid: continue
     elif props.code and props.source.len == 0:
       props.source = "temp" / &"{splitFile(md.filename).name}_src{cellid}{md.runtimes[props.language].extension}"
-    # Ephemeral cells keep no `output:` (nothing is captured/displayed); other
-    # runnable cells without an explicit `output:` get the default txt path.
+    # Ephemeral cells keep no output; other runnable cells without an explicit `output:` get the default txt path.
     if props.code and not props.ephemeral and props.output.len == 0:
       props.output = "temp" / &"{splitFile(md.filename).name}_src{cellid}.txt"
     let contentStart = buf[].find(chars = {'\n'}, start = pos.first + 2)
     var contentEnd = buf[].rfind(chars = {'\n'}, last = pos.last - 1)
     if contentEnd <= contentStart: contentEnd = contentStart
     if props.ephemeral:
-      # Content-derived tmp name in the cwd (not `temp/`). The name encodes a hash
-      # of the block's body PLUS its command signature (language id and any
-      # commands — bare blocks carry only the language, but the signature is used
-      # uniformly so a future command on a bare block also invalidates) — no cell
-      # id — so a cell's cache identity is its content+config, not its position.
-      # Inserting/deleting/reordering blocks above leaves an unchanged cell's
-      # content (and thus its hash, its file) unchanged, so it stays a cache hit
-      # and doesn't rerun. Editing a cell's body OR its language id changes its
-      # hash -> new filename; the orphaned old-hash file is swept by
-      # `sweepEphemeralCache` each run. Two distinct bare blocks with identical
-      # bodies and language share one cache file, which is correct (identical
-      # content+config runs identically). See mdnb_grammar.nim
-      # `ephemeralNamePattern` and `cellSignature` in mdnb_types.nim.
+      # Tmp name in the cwd encoding a hash of body + command signature (no cell id), so a cell's cache identity is its content+config, not its position. Editing body/config -> new filename -> orphan (swept next run) -> missing -> dirty -> runs.
       let body = md.buf[][contentStart + 1 .. contentEnd]
       let h = contentHash(body & "\x00" & props.cellSignature)
       let base = splitFile(md.filename).name & "_tmp_" & h
