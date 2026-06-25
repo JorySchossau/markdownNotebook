@@ -51,6 +51,7 @@ That is, the lang_name is the short name for the language, used possibly also co
 ---
 code: sh .sh sh
 code: python .py "python -OO"
+code: nim .nim "nim c -d:release --hints:off --warnings:off $1 && ./$1"
 ---
 
 ## Code Chunk Example
@@ -66,7 +67,7 @@ echo "from the bash demo"
 
 ``` python source:pydemo.py
 # start of the python example code
-from cowpy import cow
+import cowsay
 import text_to_image
 from PIL import Image, ImageDraw, ImageFont
 from resizeimage import resizeimage
@@ -76,7 +77,7 @@ import os
 We can continue an explanation, and then add more code to a source file as we build our explanation.
 
 ```python append:pydemo.py out:pydemo.txt
-msg = cow.Small().milk("mdnb!")
+msg = cowsay.cowsay("mdnb!")
 print(msg)
 ```
 
@@ -84,16 +85,12 @@ We can use the `show:file` shortcut directly; it will be replaced for us.
 
 show:pydemo.txt
 
-Let's save that out to an image too, and show it below
-
-```python append:pydemo.py
-image = Image.new(mode = "RGB", size = (200,200), color = "black")
-draw = ImageDraw.Draw(image)
-draw.text((10,10), msg, font=ImageFont.truetype('arial.ttf', 22), fill=(255,255,255))
-image.save("cow.png") 
+```nim out:nimout.txt
+# this is a compiled nim program
+echo "hello from nim :)"
 ```
 
-show:cow.png
+show:nimout.txt
 ~~~
 
 When you save the the file, mdnb converts that to
