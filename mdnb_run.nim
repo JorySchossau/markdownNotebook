@@ -101,6 +101,13 @@ proc cellShouldRun(cell: Cell): bool =
   if not cell.properties.code: return false
   cell.properties.trigger in {'x', 'o'} and cell.properties.state == 's'
 
+proc isActuallyRunning(md: MarkdownFile; sourceFile: string): bool =
+  ## Helps clean up stale `r` states
+  for r in running:
+    if r.filename == md.filename and r.sourceFile == sourceFile:
+      return true
+  false
+
 proc startRun(md: var MarkdownFile; idx: int) =
   ## Launch one cell's process without blocking: write the source, start the subprocess (or write output directly for `raw`), record it in `running`, flip run-state s->r (and write the `[T](r)` control). Persists the command signature sidecar for non-ephemeral cells so a later `markDirtyCells` detects command edits. The trigger is left untouched here (x stays sticky; o is cleared to blank on completion in `reapFinished`).
   let cell = md.cells[idx]
@@ -286,10 +293,16 @@ proc sweepEphemeralCache(md: var MarkdownFile) =
     tryRemoveFile(path)
 
 proc runCells(md: var MarkdownFile) =
-  ## Launch every cell that should run this pass (`[x]`-forced) and reap any finished since last cycle. Non-blocking: long cells stay in `running` and are reaped later. Non-runnable `show:` cells with an existing file read it back in (streamed through their trim window). `parallel` is a no-op here — the default save path already launches all eligible cells in one pass in document order, so they overlap whether or not they are marked `parallel`; `parallel` only changes behavior in `runCellsSequential` (the blocking `:runall`/`:runabove`/`:runbelow`/`-o` path).
+  ## Launch every cell that should run this pass (`[x]`-forced) and reap any finished since last cycle. Non-blocking: long cells stay in `running` and are reaped later. Non-runnable `show:` cells with an existing file read it back in (streamed through their trim window). `parallel` is a no-op here — the default save path already launches all eligible cells in one pass in document order, so they overlap whether or not are marked `parallel`; `parallel` only changes behavior in `runCellsSequential` (the blocking `:runall`/`:runabove`/`:runbelow`/`-o` path).
   createDir "temp"
   md.sweepEphemeralCache
   md.pollRuns
+  # Recover stale `r` run-states: a cell whose parsed state is `r` but has NO live subprocess
+  for i, cell in md.cells:
+    if cell.properties.code and cell.properties.state == 'r' and
+       not md.isActuallyRunning(cell.properties.source):
+      md.cells[i].properties.state = 's'
+      md.writeStateField(i)
   for i, cell in md.cells:
     if cellShouldRun(cell):
       md.startRun(i)
@@ -346,10 +359,14 @@ proc runCellsSequential(md: var MarkdownFile; selectedIdx: seq[int]) =
   md.pollRuns
   var pendingParallel: seq[string] = @[]
   for idx in selectedIdx:
-    # Skip a cell already running (launched on a prior pass) — forcing a second launch would collide on the same source file.
     if idx < 0 or idx >= md.cells.len: continue
     if not md.cells[idx].properties.code: continue
-    if md.cells[idx].properties.state == 'r': continue
+    # Skip a cell that is GENUINELY running
+    let src = md.cells[idx].properties.source
+    if md.isActuallyRunning(src): continue
+    if md.cells[idx].properties.state == 'r':
+      md.cells[idx].properties.state = 's'
+      md.writeStateField(idx)
     # Dependency gate: if a still-running `parallel` producer is mid-writing a file this cell consumes, wait for it first.
     while not md.dependenciesSatisfied(md.cells[idx]):
       md.pollRuns
