@@ -24,6 +24,7 @@ type Running = object
   acc: string                ## drained-so-far stdout; pipe buffer is ~64KB, so a cell whose output exceeds it would block forever writing to a full pipe if we only read on exit (see drainOutput).
 
 var running: seq[Running]    ## currently-executing cell subprocesses (module-global)
+var killedThisPass: HashSet[string]   ## source files a `[k]` kill reaped during the current `pollRuns`; the launch pass skips re-launching these so a kill on a sticky `[x]` cell stops it THIS save (it re-runs on the next genuine save), instead of being immediately undone by a relaunch.
 
 proc logRunStatus(r: Running; exitCode: int; note = "") =
   ## Verbose status (Tier 3): one line per completed cell — id, command, exit code, duration. Gated on `-v`; `note` overrides the exit code for kills (post-SIGKILL `peekExitCode` is unreliable).
@@ -257,6 +258,7 @@ proc pollRuns(md: var MarkdownFile) =
           running.delete j
           md.cells[i].properties.state = 's'
           md.writeStateField(i)
+          killedThisPass.incl cell.properties.source   # remember so the launch pass below doesn't immediately relaunch what the user just stopped
           break
   # Then reap whatever finished on its own, or kill any past its timeout (this file only). Decide fate BEFORE draining: readData blocks on an empty-but-live pipe (returns 0 only at EOF), so draining a silent still-running cell would hang the watcher and a `[k]` could never land.
   let now = getTime()
@@ -296,6 +298,7 @@ proc runCells(md: var MarkdownFile) =
   ## Launch every cell that should run this pass (`[x]`-forced) and reap any finished since last cycle. Non-blocking: long cells stay in `running` and are reaped later. Non-runnable `show:` cells with an existing file read it back in (streamed through their trim window). `parallel` is a no-op here — the default save path already launches all eligible cells in one pass in document order, so they overlap whether or not are marked `parallel`; `parallel` only changes behavior in `runCellsSequential` (the blocking `:runall`/`:runabove`/`:runbelow`/`-o` path).
   createDir "temp"
   md.sweepEphemeralCache
+  killedThisPass.clear           # `pollRuns` (next) records `[k]`-killed sources here
   md.pollRuns
   # Recover stale `r` run-states: a cell whose parsed state is `r` but has NO live subprocess
   for i, cell in md.cells:
@@ -305,6 +308,8 @@ proc runCells(md: var MarkdownFile) =
       md.writeStateField(i)
   for i, cell in md.cells:
     if cellShouldRun(cell):
+      # Skip a cell the user just stopped via `[k]` to avoid relaunching it
+      if cell.properties.source in killedThisPass: continue
       md.startRun(i)
     elif not cell.properties.code:
       # Non-runnable `show:` cell: stream its file back in if it already exists (output landed on a prior pass, or from a prior session) through the cell's trim window; a still-running producer's output lands on a later cycle via reapFinished.
